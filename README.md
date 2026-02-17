@@ -181,6 +181,23 @@ zeroclaw migrate openclaw
 
 > **Dev fallback (no global install):** prefix commands with `cargo run --release --` (example: `cargo run --release -- status`).
 
+## Local Production Container
+
+Use the helper script to generate a local production compose stack, launch it, and run a gateway + LLM smoke test:
+
+```bash
+bash scripts/prod_local_up.sh --api-key sk-...
+```
+
+This script:
+
+- writes `.env.prod` (provider/model/key)
+- writes `docker-compose.prod.yml` (release image, `zeroclaw daemon`)
+- starts the container
+- verifies `/health` and then runs pair + webhook smoke validation
+
+For network/tunnel deployment patterns (LAN, WhatsApp/webhooks, Raspberry Pi), see [docs/network-deployment.md](docs/network-deployment.md).
+
 ## Architecture
 
 Every subsystem is a **trait** — swap implementations with a config change, zero code changes.

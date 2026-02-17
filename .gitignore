@@ -7,9 +7,11 @@ firmware/*/target
 __pycache__/
 *.pyc
 docker-compose.override.yml
+docker-compose.prod.yml
 
 # Environment files (may contain secrets)
 .env
+.env.prod
 
 # Python virtual environments
 

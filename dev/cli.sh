@@ -16,8 +16,10 @@ fi
 COMPOSE_FILE="$BASE_DIR/docker-compose.yml"
 if [ "$BASE_DIR" = "dev" ]; then
     ENV_FILE=".env"
+    SMOKE_SCRIPT="dev/gateway_smoke.sh"
 else
     ENV_FILE="../.env"
+    SMOKE_SCRIPT="./gateway_smoke.sh"
 fi
 
 # Colors
@@ -61,6 +63,7 @@ function print_help {
     echo -e "  ${GREEN}logs${NC}    View logs"
     echo -e "  ${GREEN}build${NC}   Rebuild images"
     echo -e "  ${GREEN}ci${NC}      Run local CI checks in Docker (see ./dev/ci.sh)"
+    echo -e "  ${GREEN}smoke${NC}   Pair + webhook smoke test (see ./dev/gateway_smoke.sh --help)"
     echo -e "  ${GREEN}clean${NC}   Stop and wipe workspace data"
 }
 
@@ -118,6 +121,11 @@ case "$1" in
         else
             ./dev/ci.sh "${@:-all}"
         fi
+        ;;
+
+    smoke)
+        shift
+        bash "$SMOKE_SCRIPT" "$@"
         ;;
 
     clean)
