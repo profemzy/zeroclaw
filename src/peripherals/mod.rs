@@ -272,7 +272,10 @@ mod tests {
             datasheet_dir: None,
         };
         let result = list_configured_boards(&config);
-        assert!(result.is_empty(), "disabled peripherals should return no boards");
+        assert!(
+            result.is_empty(),
+            "disabled peripherals should return no boards"
+        );
     }
 
     #[test]
@@ -309,7 +312,10 @@ mod tests {
             datasheet_dir: None,
         };
         let result = list_configured_boards(&config);
-        assert!(result.is_empty(), "enabled with no boards should return empty");
+        assert!(
+            result.is_empty(),
+            "enabled with no boards should return empty"
+        );
     }
 
     #[tokio::test]
@@ -320,6 +326,9 @@ mod tests {
             datasheet_dir: None,
         };
         let tools = create_peripheral_tools(&config).await.unwrap();
-        assert!(tools.is_empty(), "disabled peripherals should produce no tools");
+        assert!(
+            tools.is_empty(),
+            "disabled peripherals should produce no tools"
+        );
     }
 }

@@ -2,7 +2,7 @@
 
 This reference is derived from the current CLI surface (`zeroclaw --help`).
 
-Last verified: **February 19, 2026**.
+Last verified: **February 20, 2026**.
 
 ## Top-Level Commands
 
@@ -23,6 +23,7 @@ Last verified: **February 19, 2026**.
 | `skills` | List/install/remove skills |
 | `migrate` | Import from external runtimes (currently OpenClaw) |
 | `config` | Export machine-readable config schema |
+| `completions` | Generate shell completion scripts to stdout |
 | `hardware` | Discover and introspect USB hardware |
 | `peripheral` | Configure and flash peripherals |
 
@@ -33,7 +34,16 @@ Last verified: **February 19, 2026**.
 - `zeroclaw onboard`
 - `zeroclaw onboard --interactive`
 - `zeroclaw onboard --channels-only`
+- `zeroclaw onboard --force`
 - `zeroclaw onboard --api-key <KEY> --provider <ID> --memory <sqlite|lucid|markdown|none>`
+- `zeroclaw onboard --api-key <KEY> --provider <ID> --model <MODEL_ID> --memory <sqlite|lucid|markdown|none>`
+- `zeroclaw onboard --api-key <KEY> --provider <ID> --model <MODEL_ID> --memory <sqlite|lucid|markdown|none> --force`
+
+`onboard` safety behavior:
+
+- If `config.toml` already exists, `onboard` asks for explicit confirmation before overwrite.
+- In non-interactive environments, existing `config.toml` causes a safe refusal unless `--force` is passed.
+- Use `zeroclaw onboard --channels-only` when you only need to rotate channel tokens/allowlists.
 
 ### `agent`
 
@@ -52,6 +62,7 @@ Last verified: **February 19, 2026**.
 - `zeroclaw service install`
 - `zeroclaw service start`
 - `zeroclaw service stop`
+- `zeroclaw service restart`
 - `zeroclaw service status`
 - `zeroclaw service uninstall`
 
@@ -66,13 +77,18 @@ Last verified: **February 19, 2026**.
 - `zeroclaw cron pause <id>`
 - `zeroclaw cron resume <id>`
 
+Notes:
+
+- Mutating schedule/cron actions require `cron.enabled = true`.
+- Shell command payloads for schedule creation (`create` / `add` / `once`) are validated by security command policy before job persistence.
+
 ### `models`
 
 - `zeroclaw models refresh`
 - `zeroclaw models refresh --provider <ID>`
 - `zeroclaw models refresh --force`
 
-`models refresh` currently supports live catalog refresh for provider IDs: `openrouter`, `openai`, `anthropic`, `groq`, `mistral`, `deepseek`, `xai`, `together-ai`, `gemini`, `ollama`, `astrai`, `venice`, `fireworks`, `cohere`, `moonshot`, `glm`, `zai`, `qwen`, and `nvidia`.
+`models refresh` currently supports live catalog refresh for provider IDs: `openrouter`, `openai`, `anthropic`, `groq`, `mistral`, `deepseek`, `xai`, `together-ai`, `gemini`, `ollama`, `llamacpp`, `astrai`, `venice`, `fireworks`, `cohere`, `moonshot`, `glm`, `zai`, `qwen`, and `nvidia`.
 
 ### `channel`
 
@@ -90,6 +106,13 @@ Runtime in-chat commands (Telegram/Discord while channel server is running):
 - `/model`
 - `/model <model-id>`
 
+Channel runtime also watches `config.toml` and hot-applies updates to:
+- `default_provider`
+- `default_model`
+- `default_temperature`
+- `api_key` / `api_url` (for the default provider)
+- `reliability.*` provider retry settings
+
 `add/remove` currently route you back to managed setup/manual config paths (not full declarative mutators yet).
 
 ### `integrations`
@@ -102,6 +125,8 @@ Runtime in-chat commands (Telegram/Discord while channel server is running):
 - `zeroclaw skills install <source>`
 - `zeroclaw skills remove <name>`
 
+`<source>` accepts git remotes (`https://...`, `http://...`, `ssh://...`, and `git@host:owner/repo.git`) or a local filesystem path.
+
 Skill manifests (`SKILL.toml`) support `prompts` and `[[tools]]`; both are injected into the agent system prompt at runtime, so the model can follow skill instructions without manually reading skill files.
 
 ### `migrate`
@@ -113,6 +138,16 @@ Skill manifests (`SKILL.toml`) support `prompts` and `[[tools]]`; both are injec
 - `zeroclaw config schema`
 
 `config schema` prints a JSON Schema (draft 2020-12) for the full `config.toml` contract to stdout.
+
+### `completions`
+
+- `zeroclaw completions bash`
+- `zeroclaw completions fish`
+- `zeroclaw completions zsh`
+- `zeroclaw completions powershell`
+- `zeroclaw completions elvish`
+
+`completions` is stdout-only by design so scripts can be sourced directly without log/warning contamination.
 
 ### `hardware`
 
