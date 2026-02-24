@@ -451,7 +451,11 @@ Report safe_to_spend prominently. Mention tax_reserved as set aside. Note outsta
 ```bash
 oluto-api.sh GET /api/v1/businesses/BID/invoices/overdue
 ```
-List each: customer name, invoice number, amount, due date, days overdue.
+The response contains `customer_id` but NOT customer names. **You MUST resolve each customer_id to a name** before presenting results:
+```bash
+oluto-api.sh GET /api/v1/businesses/$OLUTO_BUSINESS_ID/contacts/CUSTOMER_ID
+```
+List each: customer name (not ID), invoice number, amount, due date, days overdue.
 
 ### Payables Questions
 **"What bills are due?"** or **"What do I owe?"**
@@ -474,6 +478,14 @@ Report: tax_collected (GST/HST you charged customers) minus tax_itc (input tax c
 - For time-based questions, default to current month unless specified
 - If a query is vague, ask a clarifying question before making API calls
 - Format currency as $X,XXX.XX (CAD)
+
+### Drafting Emails & Communications
+When the user asks you to draft an email, reminder, or any communication:
+- **ALWAYS use actual data from the conversation context** — never use generic placeholders like [INV-###], [Customer Name], [Amount], or [Due Date] when you already have the real values
+- If you have a customer/contact ID but not their name, look it up first: `oluto-api.sh GET /api/v1/businesses/$OLUTO_BUSINESS_ID/contacts/CONTACT_ID`
+- Fill in every detail you know: invoice number, amount, due date, customer name, business name
+- Only use placeholders for information you genuinely don't have (e.g., [Your Phone Number], [Your Name]) — and clearly tell the user which fields they need to fill in
+- For overdue invoices, include: how many days overdue, the exact amount, and the invoice number
 
 ---
 
