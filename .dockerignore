@@ -13,6 +13,8 @@ tests
 
 # Markdown files (README, CHANGELOG, etc.)
 *.md
+# But keep skill markdown files (SKILL.md, references)
+!skills/**/*.md
 
 # Images (unnecessary for build)
 *.png

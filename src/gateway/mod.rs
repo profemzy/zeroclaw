@@ -14,7 +14,9 @@ use crate::providers::{self, ChatMessage, Provider, ProviderCapabilityError};
 use crate::runtime;
 use crate::security::pairing::{constant_time_eq, is_public_bind, PairingGuard};
 use crate::security::SecurityPolicy;
+use crate::agent::loop_::{build_tool_instructions, run_tool_call_loop};
 use crate::tools;
+use crate::tools::Tool;
 use crate::util::truncate_with_ellipsis;
 use anyhow::{Context, Result};
 use axum::{
@@ -34,10 +36,36 @@ use tower_http::limit::RequestBodyLimitLayer;
 use tower_http::timeout::TimeoutLayer;
 use uuid::Uuid;
 
+/// Per-request context carrying auth credentials for skill scripts.
+/// Uses `tokio::task_local!` so each concurrent request gets its own
+/// isolated context without process-global `std::env::set_var` races.
+#[derive(Clone, Debug, Default)]
+pub struct RequestContext {
+    /// The user's LedgerForge JWT extracted from the webhook Authorization header.
+    pub jwt_token: Option<String>,
+    /// The user's business UUID extracted from the webhook request body.
+    pub business_id: Option<String>,
+}
+
+tokio::task_local! {
+    /// Task-local storage for per-request auth context.
+    /// Set by `handle_webhook`, read by `ShellTool::execute`.
+    pub static REQUEST_CTX: RequestContext;
+}
+
 /// Maximum request body size (64KB) — prevents memory exhaustion
 pub const MAX_BODY_SIZE: usize = 65_536;
-/// Request timeout (30s) — prevents slow-loris attacks
-pub const REQUEST_TIMEOUT_SECS: u64 = 30;
+/// Maximum body size for multipart uploads (20MB) — matches PicoClaw
+const MAX_MULTIPART_BODY_SIZE: usize = 20 * 1024 * 1024;
+/// Maximum individual file size within a multipart upload (20MB)
+const MAX_MULTIPART_FILE_SIZE: u64 = 20 * 1024 * 1024;
+/// Maximum number of files per multipart upload
+const MAX_MULTIPART_FILE_COUNT: usize = 5;
+/// HTTP-level request timeout — generous ceiling to accommodate agentic
+/// tool-call loops. The actual agentic timeout is enforced inside
+/// `run_gateway_agentic` via `tokio::time::timeout` with a budget
+/// calculated from `message_timeout_secs * min(iterations, 4)`.
+pub const REQUEST_TIMEOUT_SECS: u64 = 1800;
 /// Sliding window used by gateway rate limiting.
 pub const RATE_LIMIT_WINDOW_SECS: u64 = 60;
 /// Fallback max distinct client keys tracked in gateway rate limiter.
@@ -290,6 +318,16 @@ pub struct AppState {
     pub nextcloud_talk_webhook_secret: Option<Arc<str>>,
     /// Observability backend for metrics scraping
     pub observer: Arc<dyn crate::observability::Observer>,
+    /// Tools registry for agentic tool-call loop (shell, file_read, memory, etc.)
+    pub tools_registry: Arc<Vec<Box<dyn Tool>>>,
+    /// Pre-built system prompt with tool descriptions and skill instructions
+    pub system_prompt: Arc<String>,
+    /// Maximum tool-call iterations per webhook request
+    pub max_tool_iterations: usize,
+    /// Multimodal config for image marker processing
+    pub multimodal: crate::config::MultimodalConfig,
+    /// Base message timeout in seconds (scaled by tool iterations for budget)
+    pub message_timeout_secs: u64,
 }
 
 /// Run the HTTP gateway using axum with proper HTTP/1.1 compliance.
@@ -350,7 +388,7 @@ pub async fn run_gateway(host: &str, port: u16, config: Config) -> Result<()> {
         (None, None)
     };
 
-    let _tools_registry = Arc::new(tools::all_tools_with_runtime(
+    let tools_registry = Arc::new(tools::all_tools_with_runtime(
         Arc::new(config.clone()),
         &security,
         runtime,
@@ -364,6 +402,146 @@ pub async fn run_gateway(host: &str, port: u16, config: Config) -> Result<()> {
         config.api_key.as_deref(),
         &config,
     ));
+
+    // ── Skills + system prompt (with tool descriptions) ──
+    let skills = crate::skills::load_skills_with_config(&config.workspace_dir, &config);
+
+    let mut tool_descs: Vec<(&str, &str)> = vec![
+        (
+            "shell",
+            "Execute terminal commands. Use this to run skill scripts, fetch data, and perform any action the user requests. Security policy enforcement is automatic — just run the command.",
+        ),
+        (
+            "file_read",
+            "Read file contents. Use when: inspecting project files, configs, logs. Don't use when: a targeted search is enough.",
+        ),
+        (
+            "file_write",
+            "Write file contents. Use when: applying focused edits, scaffolding files, updating docs/code. Don't use when: side effects are unclear or file ownership is uncertain.",
+        ),
+        (
+            "memory_store",
+            "Save to memory. Use when: preserving durable preferences, decisions, key context. Don't use when: information is transient/noisy/sensitive without need.",
+        ),
+        (
+            "memory_recall",
+            "Search memory. Use when: retrieving prior decisions, user preferences, historical context. Don't use when: answer is already in current context.",
+        ),
+        (
+            "memory_forget",
+            "Delete a memory entry. Use when: memory is incorrect/stale or explicitly requested for removal. Don't use when: impact is uncertain.",
+        ),
+    ];
+
+    if config.browser.enabled {
+        tool_descs.push((
+            "browser_open",
+            "Open approved HTTPS URLs in Brave Browser (allowlist-only, no scraping)",
+        ));
+    }
+    if config.composio.enabled {
+        tool_descs.push((
+            "composio",
+            "Execute actions on 1000+ apps via Composio (Gmail, Notion, GitHub, Slack, etc.). Use action='list' to discover actions, 'list_accounts' to retrieve connected account IDs, 'execute' to run (optionally with connected_account_id), and 'connect' for OAuth.",
+        ));
+    }
+    tool_descs.push((
+        "schedule",
+        "Manage scheduled tasks (create/list/get/cancel/pause/resume). Supports recurring cron and one-shot delays.",
+    ));
+    tool_descs.push((
+        "pushover",
+        "Send a Pushover notification to your device. Requires PUSHOVER_TOKEN and PUSHOVER_USER_KEY in .env file.",
+    ));
+    if !config.agents.is_empty() {
+        tool_descs.push((
+            "delegate",
+            "Delegate a subtask to a specialized agent. Use when: a task benefits from a different model (e.g. fast summarization, deep reasoning, code generation). The sub-agent runs a single prompt and returns its response.",
+        ));
+    }
+
+    let bootstrap_max_chars = if config.agent.compact_context {
+        Some(6000)
+    } else {
+        None
+    };
+    let native_tools = provider.supports_native_tools();
+    let mut system_prompt = crate::channels::build_system_prompt_with_mode(
+        &config.workspace_dir,
+        &model,
+        &tool_descs,
+        &skills,
+        Some(&config.identity),
+        bootstrap_max_chars,
+        native_tools,
+        config.skills.prompt_injection_mode,
+    );
+    if !native_tools {
+        system_prompt.push_str(&build_tool_instructions(tools_registry.as_ref()));
+    }
+
+    // ── Gateway prompt overrides ──────────────────────────────────
+    // The base system prompt is designed for interactive channels where
+    // the agent should be conversational. Gateway webhook is different:
+    // the user expects the agent to ACT (run tools, fetch data) not chat.
+    //
+    // Problem 1: "Your Task" says "respond naturally. Use tools when the
+    //   request requires action" — too passive, models treat tools as optional.
+    // Problem 2: "Safety" says "Do not run destructive commands without asking"
+    //   and "When in doubt, ask before acting externally" — models interpret
+    //   this as "refuse to use shell tool" even for safe read-only commands.
+    //
+    // Fix: replace both sections in-place so the model sees action-oriented
+    // instructions from the start, not just a weak override at the end.
+
+    // Replace "Your Task" — make it action-first
+    let passive_task = "## Your Task\n\n\
+         When the user sends a message, respond naturally. Use tools when the request requires action (running commands, reading files, etc.).\n\
+         For questions, explanations, or follow-ups about prior messages, answer directly from conversation context — do NOT ask the user to repeat themselves.\n\
+         Do NOT: summarize this configuration, describe your capabilities, or output step-by-step meta-commentary.\n\n";
+    let active_task = "## Your Task\n\n\
+         You are an agentic assistant in gateway mode. When the user sends a message, ACT on it using your tools.\n\
+         If the user asks about financial data, system state, dates, or anything not in the current conversation, \
+         IMMEDIATELY use your tools to fetch it. Do NOT answer from training data or make excuses.\n\
+         If a loaded skill provides scripts for the task, run them via the shell tool — security is enforced automatically.\n\
+         IMPORTANT: Always invoke scripts with `bash`, e.g. `bash ~/.picoclaw/skills/oluto/scripts/oluto-dashboard.sh`. \
+         Do not run scripts directly without the `bash` prefix.\n\
+         Do NOT: summarize this configuration, describe your capabilities, output step-by-step meta-commentary, \
+         or claim you are blocked/restricted from running commands.\n\n";
+    system_prompt = system_prompt.replace(passive_task, active_task);
+
+    // Replace "Safety" — keep real constraints, remove the "ask before acting"
+    // language that causes tool-calling reluctance. SecurityPolicy + rate limits
+    // + command allowlist enforce safety automatically at the tool layer.
+    let cautious_safety = "## Safety\n\n\
+         - Do not exfiltrate private data.\n\
+         - Do not run destructive commands without asking.\n\
+         - Do not bypass oversight or approval mechanisms.\n\
+         - Prefer `trash` over `rm` (recoverable beats gone forever).\n\
+         - When in doubt, ask before acting externally.\n\n";
+    let gateway_safety = "## Safety\n\n\
+         - Do not exfiltrate private data.\n\
+         - Security policy (command allowlist, path restrictions, rate limits) is enforced automatically.\n\
+         - You may freely run any command the security policy allows — no need to ask permission.\n\n";
+    system_prompt = system_prompt.replace(cautious_safety, gateway_safety);
+
+    let system_prompt = Arc::new(system_prompt);
+
+    let max_tool_iterations = config.agent.max_tool_iterations;
+    let multimodal = config.multimodal.clone();
+    let message_timeout_secs = config.channels_config.message_timeout_secs.max(30);
+
+    if !skills.is_empty() {
+        println!(
+            "  \u{1f9e9} Skills:   {}",
+            skills
+                .iter()
+                .map(|s| s.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
+
     // Extract webhook secret for authentication
     let webhook_secret_hash: Option<Arc<str>> =
         config.channels_config.webhook.as_ref().and_then(|webhook| {
@@ -568,14 +746,25 @@ pub async fn run_gateway(host: &str, port: u16, config: Config) -> Result<()> {
         nextcloud_talk: nextcloud_talk_channel,
         nextcloud_talk_webhook_secret,
         observer,
+        tools_registry,
+        system_prompt,
+        max_tool_iterations,
+        multimodal,
+        message_timeout_secs,
     };
 
     // Build router with middleware
+    // /webhook gets a higher body limit (20MB) for multipart file uploads;
+    // all other routes keep the default 64KB limit.
     let app = Router::new()
         .route("/health", get(handle_health))
         .route("/metrics", get(handle_metrics))
         .route("/pair", post(handle_pair))
-        .route("/webhook", post(handle_webhook))
+        .route(
+            "/webhook",
+            post(handle_webhook)
+                .layer(axum::extract::DefaultBodyLimit::max(MAX_MULTIPART_BODY_SIZE)),
+        )
         .route("/whatsapp", get(handle_whatsapp_verify))
         .route("/whatsapp", post(handle_whatsapp_message))
         .route("/linq", post(handle_linq_webhook))
@@ -713,6 +902,10 @@ async fn persist_pairing_tokens(config: Arc<Mutex<Config>>, pairing: &PairingGua
     Ok(())
 }
 
+/// Simple single-pass LLM chat for gateway channel handlers (WhatsApp, Linq,
+/// Nextcloud Talk). These channels get full tool support via the daemon's
+/// channel system. See `run_gateway_agentic` for the `/webhook` handler with
+/// agentic tool-call loop.
 async fn run_gateway_chat_with_multimodal(
     state: &AppState,
     provider_label: &str,
@@ -759,18 +952,208 @@ async fn run_gateway_chat_with_multimodal(
         .await
 }
 
+/// Execute an agentic tool-call loop for a gateway webhook request.
+///
+/// Builds a fresh 2-message history (system + user), runs the tool loop
+/// with all security layers active (SecurityPolicy, env_clear, credential
+/// scrubbing, response sanitization), and returns the cleaned response.
+///
+/// Security: `approval: None` means no interactive approval is possible;
+/// tools execute if they pass SecurityPolicy validation (command allowlist,
+/// path checks, rate limits). The request is already authenticated via
+/// pairing + webhook secret before reaching this function.
+async fn run_gateway_agentic(
+    state: &AppState,
+    provider_label: &str,
+    message: &str,
+) -> anyhow::Result<String> {
+    // ── Vision capability check ──
+    let user_messages = vec![ChatMessage::user(message)];
+    let image_marker_count = crate::multimodal::count_image_markers(&user_messages);
+    if image_marker_count > 0 && !state.provider.supports_vision() {
+        return Err(ProviderCapabilityError {
+            provider: provider_label.to_string(),
+            capability: "vision".to_string(),
+            message: format!(
+                "received {image_marker_count} image marker(s), but this provider does not support vision input"
+            ),
+        }
+        .into());
+    }
+
+    // ── Build per-request history (stateless — no cross-request memory) ──
+    let mut history = Vec::with_capacity(2);
+    history.push(ChatMessage::system((*state.system_prompt).clone()));
+    history.extend(user_messages);
+
+    // ── Compute timeout budget: base * min(iterations, 4) ──
+    let timeout_budget_secs = {
+        let iterations = state.max_tool_iterations.max(1) as u64;
+        let scale = iterations.min(4);
+        state.message_timeout_secs.saturating_mul(scale)
+    };
+
+    // ── Run tool-call loop with timeout ──
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(timeout_budget_secs),
+        run_tool_call_loop(
+            state.provider.as_ref(),
+            &mut history,
+            state.tools_registry.as_ref(),
+            state.observer.as_ref(),
+            provider_label,
+            &state.model,
+            state.temperature,
+            true,       // silent — no CLI output
+            None,       // approval: None — auto-deny tools needing approval
+            "gateway",  // channel_name for logging/metrics
+            &state.multimodal,
+            state.max_tool_iterations,
+            None,       // cancellation_token: not needed for sync HTTP
+            None,       // on_delta: no streaming for webhook responses
+        ),
+    )
+    .await;
+
+    match result {
+        Ok(Ok(response)) => {
+            // ── Sanitize: strip raw tool-call JSON artifacts from response ──
+            let sanitized = crate::channels::sanitize_channel_response(
+                &response,
+                state.tools_registry.as_ref(),
+            );
+            if sanitized.is_empty() && !response.trim().is_empty() {
+                Ok("I encountered malformed tool-call output and could not produce a safe reply. Please try again.".to_string())
+            } else {
+                Ok(sanitized)
+            }
+        }
+        Ok(Err(e)) => Err(e),
+        Err(_elapsed) => {
+            anyhow::bail!("Gateway tool-call loop timed out after {timeout_budget_secs}s")
+        }
+    }
+}
+
+// ── Multipart upload helpers ────────────────────────────────────────────────
+
+/// Strip path traversal and directory separators from an uploaded filename.
+fn sanitize_filename(filename: &str) -> String {
+    let base = std::path::Path::new(filename)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("upload");
+    base.replace("..", "")
+        .replace('/', "_")
+        .replace('\\', "_")
+}
+
+/// Save uploaded file bytes to `{workspace}/media/{uuid8}_{sanitized_name}`.
+/// Returns the absolute path on success.
+async fn save_uploaded_file(
+    workspace_dir: &std::path::Path,
+    filename: &str,
+    data: &[u8],
+) -> Option<String> {
+    let media_dir = workspace_dir.join("media");
+    if let Err(e) = tokio::fs::create_dir_all(&media_dir).await {
+        tracing::error!("Failed to create media dir: {e}");
+        return None;
+    }
+    let safe_name = sanitize_filename(filename);
+    let uuid_prefix = &Uuid::new_v4().to_string()[..8];
+    let path = media_dir.join(format!("{uuid_prefix}_{safe_name}"));
+    match tokio::fs::write(&path, data).await {
+        Ok(()) => {
+            tracing::debug!("Saved uploaded file: {}", path.display());
+            Some(path.to_string_lossy().into_owned())
+        }
+        Err(e) => {
+            tracing::error!("Failed to write file {}: {e}", path.display());
+            None
+        }
+    }
+}
+
+/// Parse a multipart/form-data webhook body.
+/// Returns `(message, business_id, media_paths)`.
+async fn parse_multipart_webhook(
+    body: Bytes,
+    boundary: &str,
+    workspace_dir: &std::path::Path,
+) -> Result<(String, Option<String>, Vec<String>), (StatusCode, Json<serde_json::Value>)> {
+    let stream = futures_util::stream::once(async move {
+        Ok::<Bytes, std::io::Error>(body)
+    });
+    let mut multipart = multer::Multipart::new(stream, boundary);
+
+    let mut message = String::new();
+    let mut business_id: Option<String> = None;
+    let mut media_paths = Vec::new();
+    let mut file_count = 0usize;
+
+    while let Some(field) = multipart.next_field().await.map_err(|e| {
+        let err = serde_json::json!({"error": format!("Multipart parse error: {e}")});
+        (StatusCode::BAD_REQUEST, Json(err))
+    })? {
+        let field_name = field.name().map(String::from);
+        let file_name = field.file_name().map(String::from);
+
+        match (field_name.as_deref(), file_name) {
+            (Some("message"), _) => {
+                message = field.text().await.unwrap_or_default();
+            }
+            (Some("business_id"), _) => {
+                business_id = Some(field.text().await.unwrap_or_default());
+            }
+            (_, Some(fname)) => {
+                file_count += 1;
+                if file_count > MAX_MULTIPART_FILE_COUNT {
+                    let err = serde_json::json!({"error": "Too many files (max 5)"});
+                    return Err((StatusCode::BAD_REQUEST, Json(err)));
+                }
+                let data = field.bytes().await.map_err(|e| {
+                    let err = serde_json::json!({"error": format!("Failed to read file: {e}")});
+                    (StatusCode::BAD_REQUEST, Json(err))
+                })?;
+                if data.len() as u64 > MAX_MULTIPART_FILE_SIZE {
+                    let err = serde_json::json!({"error": "File too large (max 20MB)"});
+                    return Err((StatusCode::BAD_REQUEST, Json(err)));
+                }
+                if let Some(path) = save_uploaded_file(workspace_dir, &fname, &data).await {
+                    media_paths.push(path);
+                }
+            }
+            _ => {} // skip unknown fields
+        }
+    }
+
+    if message.trim().is_empty() {
+        if media_paths.is_empty() {
+            let err = serde_json::json!({"error": "Missing 'message' field"});
+            return Err((StatusCode::BAD_REQUEST, Json(err)));
+        }
+        message = "Process the attached receipt".to_string();
+    }
+
+    Ok((message, business_id, media_paths))
+}
+
 /// Webhook request body
 #[derive(serde::Deserialize)]
 pub struct WebhookBody {
     pub message: String,
+    /// Optional business context (injected as OLUTO_BUSINESS_ID for skill scripts)
+    #[serde(default)]
+    pub business_id: Option<String>,
 }
 
-/// POST /webhook — main webhook endpoint
+/// POST /webhook — main webhook endpoint (accepts JSON or multipart/form-data)
 async fn handle_webhook(
     State(state): State<AppState>,
     ConnectInfo(peer_addr): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
-    body: Result<Json<WebhookBody>, axum::extract::rejection::JsonRejection>,
+    body: Bytes,
 ) -> impl IntoResponse {
     let rate_key =
         client_key_from_request(Some(peer_addr), &headers, state.trust_forwarded_headers);
@@ -817,16 +1200,54 @@ async fn handle_webhook(
         }
     }
 
-    // ── Parse body ──
-    let Json(webhook_body) = match body {
-        Ok(b) => b,
-        Err(e) => {
-            tracing::warn!("Webhook JSON parse error: {e}");
-            let err = serde_json::json!({
-                "error": "Invalid JSON body. Expected: {\"message\": \"...\"}"
-            });
-            return (StatusCode::BAD_REQUEST, Json(err));
+    // ── Parse body (JSON or multipart) ──
+    let content_type = headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+
+    let (message, business_id, media_paths) = if content_type.starts_with("multipart/form-data") {
+        let boundary = match multer::parse_boundary(content_type) {
+            Ok(b) => b,
+            Err(_) => {
+                let err = serde_json::json!({"error": "Invalid multipart boundary"});
+                return (StatusCode::BAD_REQUEST, Json(err));
+            }
+        };
+        let workspace_dir = state.config.lock().workspace_dir.clone();
+        match parse_multipart_webhook(body, &boundary, &workspace_dir).await {
+            Ok(result) => result,
+            Err(e) => return e,
         }
+    } else {
+        // JSON path (existing behavior)
+        let webhook_body: WebhookBody = match serde_json::from_slice(&body) {
+            Ok(b) => b,
+            Err(e) => {
+                tracing::warn!("Webhook JSON parse error: {e}");
+                let err = serde_json::json!({
+                    "error": "Invalid JSON body. Expected: {\"message\": \"...\"}"
+                });
+                return (StatusCode::BAD_REQUEST, Json(err));
+            }
+        };
+        (webhook_body.message, webhook_body.business_id, Vec::new())
+    };
+
+    // ── Build final message with file annotations ──
+    let message = if media_paths.is_empty() {
+        message
+    } else {
+        let mut msg = message;
+        for path in &media_paths {
+            msg.push_str(&format!(
+                "\n[attached_file: {path}]\n\
+                 IMPORTANT: This is a binary file (PDF/image). Do NOT use read_file on it. \
+                 Use the exec tool to run the appropriate skill script for processing. \
+                 For receipts, run: ~/.picoclaw/skills/oluto/scripts/oluto-receipt.sh {path}"
+            ));
+        }
+        msg
     };
 
     // ── Idempotency (optional) ──
@@ -847,13 +1268,27 @@ async fn handle_webhook(
         }
     }
 
-    let message = &webhook_body.message;
+    // ── JWT passthrough for skill scripts ──
+    // WackOps/mobile sends the user's LedgerForge JWT in the Authorization header.
+    // Extract it and build a request-scoped context (via tokio::task_local) so
+    // ShellTool can inject OLUTO_JWT_TOKEN / OLUTO_BUSINESS_ID into child
+    // processes without process-global env var races.
+    let bearer_jwt = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|auth| auth.strip_prefix("Bearer "))
+        .filter(|t| !t.is_empty() && (!state.pairing.require_pairing() || !state.pairing.is_authenticated(t)))
+        .map(String::from);
+    let request_ctx = RequestContext {
+        jwt_token: bearer_jwt,
+        business_id: business_id.clone(),
+    };
 
     if state.auto_save {
         let key = webhook_memory_key();
         let _ = state
             .mem
-            .store(&key, message, MemoryCategory::Conversation, None)
+            .store(&key, &message, MemoryCategory::Conversation, None)
             .await;
     }
 
@@ -880,7 +1315,13 @@ async fn handle_webhook(
             messages_count: 1,
         });
 
-    match run_gateway_chat_with_multimodal(&state, &provider_label, message).await {
+    // Run the agentic loop inside a task-local scope so ShellTool can
+    // read the request context without process-global env var mutation.
+    let result = REQUEST_CTX
+        .scope(request_ctx, run_gateway_agentic(&state, &provider_label, &message))
+        .await;
+
+    match result {
         Ok(response) => {
             let duration = started_at.elapsed();
             state
@@ -1360,8 +1801,10 @@ mod tests {
     }
 
     #[test]
-    fn security_timeout_is_30_seconds() {
-        assert_eq!(REQUEST_TIMEOUT_SECS, 30);
+    fn security_timeout_accommodates_tool_loop() {
+        // HTTP-level timeout must exceed the maximum tool-call budget
+        // to avoid premature termination of agentic requests.
+        assert!(REQUEST_TIMEOUT_SECS >= 300);
     }
 
     #[test]
@@ -1413,6 +1856,11 @@ mod tests {
             nextcloud_talk: None,
             nextcloud_talk_webhook_secret: None,
             observer: Arc::new(crate::observability::NoopObserver),
+            tools_registry: Arc::new(Vec::new()),
+            system_prompt: Arc::new(String::new()),
+            max_tool_iterations: 10,
+            multimodal: crate::config::MultimodalConfig::default(),
+            message_timeout_secs: 300,
         };
 
         let response = handle_metrics(State(state)).await.into_response();
@@ -1458,6 +1906,11 @@ mod tests {
             nextcloud_talk: None,
             nextcloud_talk_webhook_secret: None,
             observer,
+            tools_registry: Arc::new(Vec::new()),
+            system_prompt: Arc::new(String::new()),
+            max_tool_iterations: 10,
+            multimodal: crate::config::MultimodalConfig::default(),
+            message_timeout_secs: 300,
         };
 
         let response = handle_metrics(State(state)).await.into_response();
@@ -1820,6 +2273,11 @@ mod tests {
             nextcloud_talk: None,
             nextcloud_talk_webhook_secret: None,
             observer: Arc::new(crate::observability::NoopObserver),
+            tools_registry: Arc::new(Vec::new()),
+            system_prompt: Arc::new(String::new()),
+            max_tool_iterations: 10,
+            multimodal: crate::config::MultimodalConfig::default(),
+            message_timeout_secs: 300,
         };
 
         let mut headers = HeaderMap::new();
@@ -1827,6 +2285,7 @@ mod tests {
 
         let body = Ok(Json(WebhookBody {
             message: "hello".into(),
+            business_id: None,
         }));
         let first = handle_webhook(
             State(state.clone()),
@@ -1840,6 +2299,7 @@ mod tests {
 
         let body = Ok(Json(WebhookBody {
             message: "hello".into(),
+            business_id: None,
         }));
         let second = handle_webhook(State(state), test_connect_info(), headers, body)
             .await
@@ -1880,12 +2340,18 @@ mod tests {
             nextcloud_talk: None,
             nextcloud_talk_webhook_secret: None,
             observer: Arc::new(crate::observability::NoopObserver),
+            tools_registry: Arc::new(Vec::new()),
+            system_prompt: Arc::new(String::new()),
+            max_tool_iterations: 10,
+            multimodal: crate::config::MultimodalConfig::default(),
+            message_timeout_secs: 300,
         };
 
         let headers = HeaderMap::new();
 
         let body1 = Ok(Json(WebhookBody {
             message: "hello one".into(),
+            business_id: None,
         }));
         let first = handle_webhook(
             State(state.clone()),
@@ -1899,6 +2365,7 @@ mod tests {
 
         let body2 = Ok(Json(WebhookBody {
             message: "hello two".into(),
+            business_id: None,
         }));
         let second = handle_webhook(State(state), test_connect_info(), headers, body2)
             .await
@@ -1952,6 +2419,11 @@ mod tests {
             nextcloud_talk: None,
             nextcloud_talk_webhook_secret: None,
             observer: Arc::new(crate::observability::NoopObserver),
+            tools_registry: Arc::new(Vec::new()),
+            system_prompt: Arc::new(String::new()),
+            max_tool_iterations: 10,
+            multimodal: crate::config::MultimodalConfig::default(),
+            message_timeout_secs: 300,
         };
 
         let response = handle_webhook(
@@ -1960,6 +2432,7 @@ mod tests {
             HeaderMap::new(),
             Ok(Json(WebhookBody {
                 message: "hello".into(),
+                business_id: None,
             })),
         )
         .await
@@ -1996,6 +2469,11 @@ mod tests {
             nextcloud_talk: None,
             nextcloud_talk_webhook_secret: None,
             observer: Arc::new(crate::observability::NoopObserver),
+            tools_registry: Arc::new(Vec::new()),
+            system_prompt: Arc::new(String::new()),
+            max_tool_iterations: 10,
+            multimodal: crate::config::MultimodalConfig::default(),
+            message_timeout_secs: 300,
         };
 
         let mut headers = HeaderMap::new();
@@ -2010,6 +2488,7 @@ mod tests {
             headers,
             Ok(Json(WebhookBody {
                 message: "hello".into(),
+                business_id: None,
             })),
         )
         .await
@@ -2045,6 +2524,11 @@ mod tests {
             nextcloud_talk: None,
             nextcloud_talk_webhook_secret: None,
             observer: Arc::new(crate::observability::NoopObserver),
+            tools_registry: Arc::new(Vec::new()),
+            system_prompt: Arc::new(String::new()),
+            max_tool_iterations: 10,
+            multimodal: crate::config::MultimodalConfig::default(),
+            message_timeout_secs: 300,
         };
 
         let mut headers = HeaderMap::new();
@@ -2056,6 +2540,7 @@ mod tests {
             headers,
             Ok(Json(WebhookBody {
                 message: "hello".into(),
+                business_id: None,
             })),
         )
         .await
@@ -2099,6 +2584,11 @@ mod tests {
             nextcloud_talk: None,
             nextcloud_talk_webhook_secret: None,
             observer: Arc::new(crate::observability::NoopObserver),
+            tools_registry: Arc::new(Vec::new()),
+            system_prompt: Arc::new(String::new()),
+            max_tool_iterations: 10,
+            multimodal: crate::config::MultimodalConfig::default(),
+            message_timeout_secs: 300,
         };
 
         let response = handle_nextcloud_talk_webhook(
@@ -2149,6 +2639,11 @@ mod tests {
             nextcloud_talk: Some(channel),
             nextcloud_talk_webhook_secret: Some(Arc::from(secret)),
             observer: Arc::new(crate::observability::NoopObserver),
+            tools_registry: Arc::new(Vec::new()),
+            system_prompt: Arc::new(String::new()),
+            max_tool_iterations: 10,
+            multimodal: crate::config::MultimodalConfig::default(),
+            message_timeout_secs: 300,
         };
 
         let mut headers = HeaderMap::new();

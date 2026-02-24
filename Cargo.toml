@@ -130,6 +130,9 @@ tower = { version = "0.5", default-features = false }
 tower-http = { version = "0.6", default-features = false, features = ["limit", "timeout"] }
 http-body-util = "0.1"
 
+# Multipart form-data parsing (file uploads via /webhook)
+multer = "3"
+
 # OpenTelemetry — OTLP trace + metrics export.
 # Use the blocking HTTP exporter client to avoid Tokio-reactor panics in
 # OpenTelemetry background batch threads when ZeroClaw emits spans/metrics from

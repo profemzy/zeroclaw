@@ -1,4 +1,5 @@
 use super::traits::{Tool, ToolResult};
+use crate::gateway::REQUEST_CTX;
 use crate::runtime::RuntimeAdapter;
 use crate::security::SecurityPolicy;
 use async_trait::async_trait;
@@ -116,6 +117,17 @@ impl Tool for ShellTool {
                 cmd.env(var, val);
             }
         }
+        // Gateway JWT passthrough: inject auth context from the request-scoped
+        // task-local (set by handle_webhook via REQUEST_CTX.scope()).  This avoids
+        // process-global std::env::set_var races under concurrent requests.
+        let _ = REQUEST_CTX.try_with(|ctx| {
+            if let Some(ref jwt) = ctx.jwt_token {
+                cmd.env("OLUTO_JWT_TOKEN", jwt);
+            }
+            if let Some(ref bid) = ctx.business_id {
+                cmd.env("OLUTO_BUSINESS_ID", bid);
+            }
+        });
 
         let result =
             tokio::time::timeout(Duration::from_secs(SHELL_TIMEOUT_SECS), cmd.output()).await;

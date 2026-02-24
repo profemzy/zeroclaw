@@ -62,6 +62,7 @@ FROM debian:trixie-slim@sha256:f6e2cfac5cf956ea044b4bd75e6397b4372ad88fe00908045
 RUN apt-get update && apt-get install -y \
     ca-certificates \
     curl \
+    jq \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /zeroclaw-data /zeroclaw-data
@@ -82,6 +83,19 @@ ENV ZEROCLAW_GATEWAY_PORT=3000
 
 # Note: API_KEY is intentionally NOT set here to avoid confusion.
 # It is set in config.toml as the Ollama URL.
+
+# Copy Oluto skill into workspace (SKILL.md, scripts, references)
+COPY skills/ /zeroclaw-data/workspace/skills/
+RUN chmod +x /zeroclaw-data/workspace/skills/oluto/scripts/*.sh 2>/dev/null || true
+
+# Create .picoclaw/skills symlink so skill scripts at ~/workspace/skills/
+# are accessible via the ~/.picoclaw/skills/ path referenced in SKILL.md.
+# Also pre-create .oluto-token.json so auth scripts can cache tokens.
+RUN mkdir -p /zeroclaw-data/.picoclaw \
+    && ln -sf /zeroclaw-data/workspace/skills /zeroclaw-data/.picoclaw/skills \
+    && touch /zeroclaw-data/.oluto-token.json \
+    && chown -R 65534:65534 /zeroclaw-data/.picoclaw /zeroclaw-data/.oluto-token.json \
+    && chown -R 65534:65534 /zeroclaw-data/workspace/skills
 
 WORKDIR /zeroclaw-data
 USER 65534:65534
