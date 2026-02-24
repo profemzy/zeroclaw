@@ -29,3 +29,10 @@ venv/
 *.pem
 credentials.json
 .worktrees/
+
+# Runtime artifacts
+gateway.log
+gateway.pid
+
+# IDE
+.junie/
