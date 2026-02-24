@@ -18,6 +18,7 @@ trigger:
       - Cargo.lock
       - Dockerfile
       - dev/**
+      - azure-pipelines/**
 
 pr:
   branches:
@@ -139,7 +140,7 @@ stages:
                       echo "##vso[task.prependpath]/usr/local/bin"
 
                 - task: AzureCLI@2
-                  displayName: "Rollout Restart Agent (DEV)"
+                  displayName: "Deploy Agent Image (DEV)"
                   inputs:
                     azureSubscription: $(azureServiceConnection)
                     scriptType: "bash"
@@ -150,7 +151,10 @@ stages:
                         --name wackopscoach-dev-aks \
                         --overwrite-existing
                       kubelogin convert-kubeconfig -l azurecli
-                      kubectl rollout restart deployment/oluto-agent -n oluto
+                      echo "Setting image to $(acrLoginServer)/$(imageRepository):$(tag)"
+                      kubectl set image deployment/oluto-agent \
+                        oluto-agent=$(acrLoginServer)/$(imageRepository):$(tag) \
+                        -n oluto
                       kubectl rollout status deployment/oluto-agent -n oluto --timeout=300s
 
                 - task: AzureCLI@2
@@ -235,7 +239,7 @@ stages:
                       echo "##vso[task.prependpath]/usr/local/bin"
 
                 - task: AzureCLI@2
-                  displayName: "Rollout Restart Agent (PROD)"
+                  displayName: "Deploy Agent Image (PROD)"
                   inputs:
                     azureSubscription: $(azureServiceConnection)
                     scriptType: "bash"
@@ -246,7 +250,10 @@ stages:
                         --name wackopscoach-prod-aks \
                         --overwrite-existing
                       kubelogin convert-kubeconfig -l azurecli
-                      kubectl rollout restart deployment/oluto-agent -n oluto
+                      echo "Setting image to $(acrLoginServerProd)/$(imageRepository):$(tag)"
+                      kubectl set image deployment/oluto-agent \
+                        oluto-agent=$(acrLoginServerProd)/$(imageRepository):$(tag) \
+                        -n oluto
                       kubectl rollout status deployment/oluto-agent -n oluto --timeout=300s
 
                 - task: AzureCLI@2
