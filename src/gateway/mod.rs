@@ -32,7 +32,6 @@ use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tower_http::limit::RequestBodyLimitLayer;
 use tower_http::timeout::TimeoutLayer;
 use uuid::Uuid;
 
@@ -770,7 +769,7 @@ pub async fn run_gateway(host: &str, port: u16, config: Config) -> Result<()> {
         .route("/linq", post(handle_linq_webhook))
         .route("/nextcloud-talk", post(handle_nextcloud_talk_webhook))
         .with_state(state)
-        .layer(RequestBodyLimitLayer::new(MAX_BODY_SIZE))
+        .layer(axum::extract::DefaultBodyLimit::max(MAX_BODY_SIZE))
         .layer(TimeoutLayer::with_status_code(
             StatusCode::REQUEST_TIMEOUT,
             Duration::from_secs(REQUEST_TIMEOUT_SECS),
@@ -1244,7 +1243,9 @@ async fn handle_webhook(
                 "\n[attached_file: {path}]\n\
                  IMPORTANT: This is a binary file (PDF/image). Do NOT use read_file on it. \
                  Use the exec tool to run the appropriate skill script for processing. \
-                 For receipts, run: ~/.picoclaw/skills/oluto/scripts/oluto-receipt.sh {path}"
+                 Choose the script based on the user's message:\n\
+                 - For receipts: ~/.picoclaw/skills/oluto/scripts/oluto-receipt.sh {path}\n\
+                 - For bank/credit card statements: ~/.picoclaw/skills/oluto/scripts/oluto-import-statement.sh {path}"
             ));
         }
         msg
