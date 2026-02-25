@@ -51,7 +51,7 @@ impl QQChannel {
     }
 
     fn is_user_allowed(&self, user_id: &str) -> bool {
-        self.allowed_users.iter().any(|u| u == "*" || u == user_id)
+        super::is_user_in_allowlist(&self.allowed_users, user_id)
     }
 
     /// Fetch an access token from QQ's OAuth2 endpoint.

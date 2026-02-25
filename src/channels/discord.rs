@@ -43,7 +43,7 @@ impl DiscordChannel {
     /// Empty list means deny everyone until explicitly configured.
     /// `"*"` means allow everyone.
     fn is_user_allowed(&self, user_id: &str) -> bool {
-        self.allowed_users.iter().any(|u| u == "*" || u == user_id)
+        super::is_user_in_allowlist(&self.allowed_users, user_id)
     }
 
     fn bot_user_id_from_token(token: &str) -> Option<String> {

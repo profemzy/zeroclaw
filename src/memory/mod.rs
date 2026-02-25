@@ -8,7 +8,6 @@ pub mod markdown;
 pub mod none;
 #[cfg(feature = "memory-postgres")]
 pub mod postgres;
-pub mod response_cache;
 pub mod snapshot;
 pub mod sqlite;
 pub mod traits;
@@ -17,18 +16,17 @@ pub mod vector;
 #[allow(unused_imports)]
 pub use backend::{
     classify_memory_backend, default_memory_backend_key, memory_backend_profile,
-    selectable_memory_backends, MemoryBackendKind, MemoryBackendProfile,
+    selectable_memory_backends, MemoryBackendKind,
 };
 pub use lucid::LucidMemory;
 pub use markdown::MarkdownMemory;
 pub use none::NoneMemory;
 #[cfg(feature = "memory-postgres")]
 pub use postgres::PostgresMemory;
-pub use response_cache::ResponseCache;
 pub use sqlite::SqliteMemory;
-pub use traits::Memory;
+pub use traits::{Memory, MemoryCategory};
 #[allow(unused_imports)]
-pub use traits::{MemoryCategory, MemoryEntry};
+pub use traits::MemoryEntry;
 
 use crate::config::{EmbeddingRouteConfig, MemoryConfig, StorageProviderConfig};
 #[cfg(feature = "memory-postgres")]
@@ -331,32 +329,6 @@ pub fn create_memory_for_migration(
         || anyhow::bail!("postgres backend is not available in migration context"),
         " during migration",
     )
-}
-
-/// Factory: create an optional response cache from config.
-pub fn create_response_cache(config: &MemoryConfig, workspace_dir: &Path) -> Option<ResponseCache> {
-    if !config.response_cache_enabled {
-        return None;
-    }
-
-    match ResponseCache::new(
-        workspace_dir,
-        config.response_cache_ttl_minutes,
-        config.response_cache_max_entries,
-    ) {
-        Ok(cache) => {
-            tracing::info!(
-                "💾 Response cache enabled (TTL: {}min, max: {} entries)",
-                config.response_cache_ttl_minutes,
-                config.response_cache_max_entries
-            );
-            Some(cache)
-        }
-        Err(e) => {
-            tracing::warn!("Response cache disabled due to error: {e}");
-            None
-        }
-    }
 }
 
 #[cfg(test)]

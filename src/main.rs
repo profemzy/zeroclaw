@@ -29,6 +29,10 @@
     clippy::unnecessary_literal_bound,
     clippy::unnecessary_map_or,
     clippy::unnecessary_wraps,
+    // Fork of openagen/zeroclaw — many upstream public APIs are not called from
+    // our gateway-only deployment. Truly dead code (orphaned files, unused
+    // modules like skillforge/cost) has been deleted; remaining warnings are
+    // upstream infrastructure kept for merge compatibility.
     dead_code
 )]
 
@@ -75,7 +79,6 @@ mod providers;
 mod runtime;
 mod security;
 mod service;
-mod skillforge;
 mod skills;
 mod tools;
 mod tunnel;

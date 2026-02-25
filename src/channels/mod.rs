@@ -130,6 +130,14 @@ fn channel_message_timeout_budget_secs(
     message_timeout_secs.saturating_mul(scale)
 }
 
+/// Returns `true` if `id` is present in the `allowed` list or the list contains `"*"`.
+///
+/// Used by channel implementations to check whether an incoming message sender
+/// is permitted to interact with the agent.
+pub fn is_user_in_allowlist(allowed: &[String], id: &str) -> bool {
+    allowed.iter().any(|u| u == "*" || u == id)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ChannelRouteSelection {
     provider: String,

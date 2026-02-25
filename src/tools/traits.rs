@@ -9,6 +9,18 @@ pub struct ToolResult {
     pub error: Option<String>,
 }
 
+impl ToolResult {
+    /// Create a successful result with the given output.
+    pub fn ok(output: impl Into<String>) -> Self {
+        Self { success: true, output: output.into(), error: None }
+    }
+
+    /// Create a failed result with the given error message.
+    pub fn err(message: impl Into<String>) -> Self {
+        Self { success: false, output: String::new(), error: Some(message.into()) }
+    }
+}
+
 /// Description of a tool for the LLM
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolSpec {

@@ -76,12 +76,9 @@ pub use pdf_read::PdfReadTool;
 pub use proxy_config::ProxyConfigTool;
 pub use pushover::PushoverTool;
 pub use schedule::ScheduleTool;
-#[allow(unused_imports)]
-pub use schema::{CleaningStrategy, SchemaCleanr};
 pub use screenshot::ScreenshotTool;
 pub use shell::ShellTool;
 pub use traits::Tool;
-#[allow(unused_imports)]
 pub use traits::{ToolResult, ToolSpec};
 pub use web_search_tool::WebSearchTool;
 
@@ -92,6 +89,30 @@ use crate::security::SecurityPolicy;
 use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::Arc;
+
+/// Check that the security policy allows a mutation (write/create/delete).
+///
+/// Returns `Some(ToolResult)` with an error if the action is blocked,
+/// or `None` if the action is allowed. Handles read-only mode, rate
+/// limiting, and action budget tracking.
+pub fn enforce_mutation(security: &SecurityPolicy, action: &str) -> Option<ToolResult> {
+    if !security.can_act() {
+        return Some(ToolResult::err(format!(
+            "Security policy: read-only mode, cannot perform '{action}'"
+        )));
+    }
+    if security.is_rate_limited() {
+        return Some(ToolResult::err(
+            "Rate limit exceeded: too many actions in the last hour",
+        ));
+    }
+    if !security.record_action() {
+        return Some(ToolResult::err(
+            "Rate limit exceeded: action budget exhausted",
+        ));
+    }
+    None
+}
 
 #[derive(Clone)]
 struct ArcDelegatingTool {

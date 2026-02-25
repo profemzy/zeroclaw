@@ -26,7 +26,7 @@ impl NextcloudTalkChannel {
     }
 
     fn is_user_allowed(&self, actor_id: &str) -> bool {
-        self.allowed_users.iter().any(|u| u == "*" || u == actor_id)
+        super::is_user_in_allowlist(&self.allowed_users, actor_id)
     }
 
     fn now_unix_secs() -> u64 {

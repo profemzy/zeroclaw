@@ -25,7 +25,7 @@ impl SlackChannel {
     /// Empty list means deny everyone until explicitly configured.
     /// `"*"` means allow everyone.
     fn is_user_allowed(&self, user_id: &str) -> bool {
-        self.allowed_users.iter().any(|u| u == "*" || u == user_id)
+        super::is_user_in_allowlist(&self.allowed_users, user_id)
     }
 
     /// Get the bot's own user ID so we can ignore our own messages

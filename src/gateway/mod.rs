@@ -1043,8 +1043,7 @@ fn sanitize_filename(filename: &str) -> String {
         .and_then(|n| n.to_str())
         .unwrap_or("upload");
     base.replace("..", "")
-        .replace('/', "_")
-        .replace('\\', "_")
+        .replace(['/', '\\'], "_")
 }
 
 /// Save uploaded file bytes to `{workspace}/media/{uuid8}_{sanitized_name}`.
@@ -1239,14 +1238,16 @@ async fn handle_webhook(
     } else {
         let mut msg = message;
         for path in &media_paths {
-            msg.push_str(&format!(
+            use std::fmt::Write;
+            let _ = write!(
+                msg,
                 "\n[attached_file: {path}]\n\
                  IMPORTANT: This is a binary file (PDF/image). Do NOT use read_file on it. \
                  Use the exec tool to run the appropriate skill script for processing. \
                  Choose the script based on the user's message:\n\
                  - For receipts: ~/workspace/skills/oluto/scripts/oluto-receipt.sh {path}\n\
                  - For bank/credit card statements: ~/workspace/skills/oluto/scripts/oluto-import-statement.sh {path}"
-            ));
+            );
         }
         msg
     };
@@ -2284,10 +2285,7 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert("X-Idempotency-Key", HeaderValue::from_static("abc-123"));
 
-        let body = Ok(Json(WebhookBody {
-            message: "hello".into(),
-            business_id: None,
-        }));
+        let body = Bytes::from_static(br#"{"message":"hello"}"#);
         let first = handle_webhook(
             State(state.clone()),
             test_connect_info(),
@@ -2298,10 +2296,7 @@ mod tests {
         .into_response();
         assert_eq!(first.status(), StatusCode::OK);
 
-        let body = Ok(Json(WebhookBody {
-            message: "hello".into(),
-            business_id: None,
-        }));
+        let body = Bytes::from_static(br#"{"message":"hello"}"#);
         let second = handle_webhook(State(state), test_connect_info(), headers, body)
             .await
             .into_response();
@@ -2350,10 +2345,7 @@ mod tests {
 
         let headers = HeaderMap::new();
 
-        let body1 = Ok(Json(WebhookBody {
-            message: "hello one".into(),
-            business_id: None,
-        }));
+        let body1 = Bytes::from_static(br#"{"message":"hello one"}"#);
         let first = handle_webhook(
             State(state.clone()),
             test_connect_info(),
@@ -2364,10 +2356,7 @@ mod tests {
         .into_response();
         assert_eq!(first.status(), StatusCode::OK);
 
-        let body2 = Ok(Json(WebhookBody {
-            message: "hello two".into(),
-            business_id: None,
-        }));
+        let body2 = Bytes::from_static(br#"{"message":"hello two"}"#);
         let second = handle_webhook(State(state), test_connect_info(), headers, body2)
             .await
             .into_response();
@@ -2431,10 +2420,7 @@ mod tests {
             State(state),
             test_connect_info(),
             HeaderMap::new(),
-            Ok(Json(WebhookBody {
-                message: "hello".into(),
-                business_id: None,
-            })),
+            Bytes::from_static(br#"{"message":"hello"}"#),
         )
         .await
         .into_response();
@@ -2487,10 +2473,7 @@ mod tests {
             State(state),
             test_connect_info(),
             headers,
-            Ok(Json(WebhookBody {
-                message: "hello".into(),
-                business_id: None,
-            })),
+            Bytes::from_static(br#"{"message":"hello"}"#),
         )
         .await
         .into_response();
@@ -2539,10 +2522,7 @@ mod tests {
             State(state),
             test_connect_info(),
             headers,
-            Ok(Json(WebhookBody {
-                message: "hello".into(),
-                business_id: None,
-            })),
+            Bytes::from_static(br#"{"message":"hello"}"#),
         )
         .await
         .into_response();

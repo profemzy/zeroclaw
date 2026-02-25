@@ -32,6 +32,10 @@
     clippy::unused_self,
     clippy::cast_precision_loss,
     clippy::unnecessary_wraps,
+    // Fork of openagen/zeroclaw — many upstream public APIs are not called from
+    // our gateway-only deployment. Truly dead code (orphaned files, unused
+    // modules like skillforge/cost) has been deleted; remaining warnings are
+    // upstream infrastructure kept for merge compatibility.
     dead_code
 )]
 
@@ -43,7 +47,6 @@ pub(crate) mod approval;
 pub(crate) mod auth;
 pub mod channels;
 pub mod config;
-pub(crate) mod cost;
 pub(crate) mod cron;
 pub(crate) mod daemon;
 pub(crate) mod doctor;

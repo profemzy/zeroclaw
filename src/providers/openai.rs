@@ -1,6 +1,9 @@
+use crate::providers::openai_wire::{
+    convert_messages, NativeChatRequest, NativeToolFunctionSpec, NativeToolSpec, NativeToolCall,
+};
 use crate::providers::traits::{
-    ChatMessage, ChatRequest as ProviderChatRequest, ChatResponse as ProviderChatResponse,
-    Provider, ToolCall as ProviderToolCall,
+    ChatMessage, ChatRequest as ProviderChatRequest, ChatResponse as ProviderChatResponse, Provider,
+    ToolCall as ProviderToolCall,
 };
 use crate::tools::ToolSpec;
 use async_trait::async_trait;
@@ -53,42 +56,6 @@ impl ResponseMessage {
     }
 }
 
-#[derive(Debug, Serialize)]
-struct NativeChatRequest {
-    model: String,
-    messages: Vec<NativeMessage>,
-    temperature: f64,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    tools: Option<Vec<NativeToolSpec>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    tool_choice: Option<String>,
-}
-
-#[derive(Debug, Serialize)]
-struct NativeMessage {
-    role: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    content: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    tool_call_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    tool_calls: Option<Vec<NativeToolCall>>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct NativeToolSpec {
-    #[serde(rename = "type")]
-    kind: String,
-    function: NativeToolFunctionSpec,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct NativeToolFunctionSpec {
-    name: String,
-    description: String,
-    parameters: serde_json::Value,
-}
-
 fn parse_native_tool_spec(value: serde_json::Value) -> anyhow::Result<NativeToolSpec> {
     let spec: NativeToolSpec = serde_json::from_value(value)
         .map_err(|e| anyhow::anyhow!("Invalid OpenAI tool specification: {e}"))?;
@@ -101,21 +68,6 @@ fn parse_native_tool_spec(value: serde_json::Value) -> anyhow::Result<NativeTool
     }
 
     Ok(spec)
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct NativeToolCall {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    id: Option<String>,
-    #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
-    kind: Option<String>,
-    function: NativeFunctionCall,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct NativeFunctionCall {
-    name: String,
-    arguments: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -178,73 +130,6 @@ impl OpenAiProvider {
                 })
                 .collect()
         })
-    }
-
-    fn convert_messages(messages: &[ChatMessage]) -> Vec<NativeMessage> {
-        messages
-            .iter()
-            .map(|m| {
-                if m.role == "assistant" {
-                    if let Ok(value) = serde_json::from_str::<serde_json::Value>(&m.content) {
-                        if let Some(tool_calls_value) = value.get("tool_calls") {
-                            if let Ok(parsed_calls) =
-                                serde_json::from_value::<Vec<ProviderToolCall>>(
-                                    tool_calls_value.clone(),
-                                )
-                            {
-                                let tool_calls = parsed_calls
-                                    .into_iter()
-                                    .map(|tc| NativeToolCall {
-                                        id: Some(tc.id),
-                                        kind: Some("function".to_string()),
-                                        function: NativeFunctionCall {
-                                            name: tc.name,
-                                            arguments: tc.arguments,
-                                        },
-                                    })
-                                    .collect::<Vec<_>>();
-                                let content = value
-                                    .get("content")
-                                    .and_then(serde_json::Value::as_str)
-                                    .map(ToString::to_string);
-                                return NativeMessage {
-                                    role: "assistant".to_string(),
-                                    content,
-                                    tool_call_id: None,
-                                    tool_calls: Some(tool_calls),
-                                };
-                            }
-                        }
-                    }
-                }
-
-                if m.role == "tool" {
-                    if let Ok(value) = serde_json::from_str::<serde_json::Value>(&m.content) {
-                        let tool_call_id = value
-                            .get("tool_call_id")
-                            .and_then(serde_json::Value::as_str)
-                            .map(ToString::to_string);
-                        let content = value
-                            .get("content")
-                            .and_then(serde_json::Value::as_str)
-                            .map(ToString::to_string);
-                        return NativeMessage {
-                            role: "tool".to_string(),
-                            content,
-                            tool_call_id,
-                            tool_calls: None,
-                        };
-                    }
-                }
-
-                NativeMessage {
-                    role: m.role.clone(),
-                    content: Some(m.content.clone()),
-                    tool_call_id: None,
-                    tool_calls: None,
-                }
-            })
-            .collect()
     }
 
     fn parse_native_response(message: NativeResponseMessage) -> ProviderChatResponse {
@@ -336,7 +221,7 @@ impl Provider for OpenAiProvider {
         let tools = Self::convert_tools(request.tools);
         let native_request = NativeChatRequest {
             model: model.to_string(),
-            messages: Self::convert_messages(request.messages),
+            messages: convert_messages(request.messages),
             temperature,
             tool_choice: tools.as_ref().map(|_| "auto".to_string()),
             tools,
@@ -393,7 +278,7 @@ impl Provider for OpenAiProvider {
 
         let native_request = NativeChatRequest {
             model: model.to_string(),
-            messages: Self::convert_messages(messages),
+            messages: convert_messages(messages),
             temperature,
             tool_choice: native_tools.as_ref().map(|_| "auto".to_string()),
             tools: native_tools,
