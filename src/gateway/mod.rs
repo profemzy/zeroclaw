@@ -54,7 +54,7 @@ tokio::task_local! {
 
 /// Maximum request body size (64KB) — prevents memory exhaustion
 pub const MAX_BODY_SIZE: usize = 65_536;
-/// Maximum body size for multipart uploads (20MB) — matches PicoClaw
+/// Maximum body size for multipart uploads (20MB)
 const MAX_MULTIPART_BODY_SIZE: usize = 20 * 1024 * 1024;
 /// Maximum individual file size within a multipart upload (20MB)
 const MAX_MULTIPART_FILE_SIZE: u64 = 20 * 1024 * 1024;

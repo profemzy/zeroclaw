@@ -79,15 +79,15 @@ Use this board for important notices (breaking changes, security advisories, mai
 
 Local machine quick benchmark (macOS arm64, Feb 2026) normalized for 0.8GHz edge hardware.
 
-| | OpenClaw | NanoBot | PicoClaw | ZeroClaw 🦀 |
-|---|---|---|---|---|
-| **Language** | TypeScript | Python | Go | **Rust** |
-| **RAM** | > 1GB | > 100MB | < 10MB | **< 5MB** |
-| **Startup (0.8GHz core)** | > 500s | > 30s | < 1s | **< 10ms** |
-| **Binary Size** | ~28MB (dist) | N/A (Scripts) | ~8MB | **~8.8 MB** |
-| **Cost** | Mac Mini $599 | Linux SBC ~$50 | Linux Board $10 | **Any hardware $10** |
+| | OpenClaw | NanoBot | ZeroClaw 🦀 |
+|---|---|---|---|
+| **Language** | TypeScript | Python | **Rust** |
+| **RAM** | > 1GB | > 100MB | **< 5MB** |
+| **Startup (0.8GHz core)** | > 500s | > 30s | **< 10ms** |
+| **Binary Size** | ~28MB (dist) | N/A (Scripts) | **~8.8 MB** |
+| **Cost** | Mac Mini $599 | Linux SBC ~$50 | **Any hardware $10** |
 
-> Notes: ZeroClaw results are measured on release builds using `/usr/bin/time -l`. OpenClaw requires Node.js runtime (typically ~390MB additional memory overhead), while NanoBot requires Python runtime. PicoClaw and ZeroClaw are static binaries. The RAM figures above are runtime memory; build-time compilation requirements are higher.
+> Notes: ZeroClaw results are measured on release builds using `/usr/bin/time -l`. OpenClaw requires Node.js runtime (typically ~390MB additional memory overhead), while NanoBot requires Python runtime. The RAM figures above are runtime memory; build-time compilation requirements are higher.
 
 <p align="center">
   <img src="zero-claw.jpeg" alt="ZeroClaw vs OpenClaw Comparison" width="800" />

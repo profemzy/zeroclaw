@@ -29,20 +29,20 @@ ZeroClaw already has **excellent application-layer security**:
 
 ---
 
-## Comparison: ZeroClaw vs PicoClaw vs Production Grade
+## Comparison: ZeroClaw vs Production Grade
 
-| Feature | PicoClaw | ZeroClaw Now | ZeroClaw + Roadmap | Production Target |
-|---------|----------|--------------|-------------------|-------------------|
-| **Binary Size** | ~8MB | **3.4MB** ✅ | 3.5-4MB | < 5MB |
-| **RAM Usage** | < 10MB | **< 5MB** ✅ | < 10MB | < 20MB |
-| **Startup Time** | < 1s | **< 10ms** ✅ | < 50ms | < 100ms |
-| **Command Allowlist** | Unknown | ✅ Yes | ✅ Yes | ✅ Yes |
-| **Path Blocking** | Unknown | ✅ Yes | ✅ Yes | ✅ Yes |
-| **Injection Protection** | Unknown | ✅ Yes | ✅ Yes | ✅ Yes |
-| **OS Sandbox** | No | ❌ No | ✅ Firejail/Landlock | ✅ Container/namespaces |
-| **Resource Limits** | No | ❌ No | ✅ cgroups/Monitor | ✅ Full cgroups |
-| **Audit Logging** | No | ❌ No | ✅ HMAC-signed | ✅ SIEM integration |
-| **Security Score** | C | **B+** | **A-** | **A+** |
+| Feature | ZeroClaw Now | ZeroClaw + Roadmap | Production Target |
+|---------|--------------|--------------------|-------------------|
+| **Binary Size** | **3.4MB** ✅ | 3.5-4MB | < 5MB |
+| **RAM Usage** | **< 5MB** ✅ | < 10MB | < 20MB |
+| **Startup Time** | **< 10ms** ✅ | < 50ms | < 100ms |
+| **Command Allowlist** | ✅ Yes | ✅ Yes | ✅ Yes |
+| **Path Blocking** | ✅ Yes | ✅ Yes | ✅ Yes |
+| **Injection Protection** | ✅ Yes | ✅ Yes | ✅ Yes |
+| **OS Sandbox** | ❌ No | ✅ Firejail/Landlock | ✅ Container/namespaces |
+| **Resource Limits** | ❌ No | ✅ cgroups/Monitor | ✅ Full cgroups |
+| **Audit Logging** | ❌ No | ✅ HMAC-signed | ✅ SIEM integration |
+| **Security Score** | **B+** | **A-** | **A+** |
 
 ---
 
@@ -168,10 +168,10 @@ zeroclaw sandbox --test
 
 ## Summary
 
-**ZeroClaw is already more secure than PicoClaw** with:
-- 50% smaller binary (3.4MB vs 8MB)
-- 50% less RAM (< 5MB vs < 10MB)
-- 100x faster startup (< 10ms vs < 1s)
+**ZeroClaw already delivers a strong security baseline** with:
+- Small binary (3.4MB)
+- Low memory footprint (< 5MB)
+- Fast startup (< 10ms)
 - Comprehensive security policy engine
 - Extensive test coverage
 
