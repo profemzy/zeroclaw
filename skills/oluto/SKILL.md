@@ -29,7 +29,7 @@ Fallback (only if env var is not set):
 
 ### Config file
 - `~/.oluto-config.json` — contains `base_url` (and optionally `default_business_id`)
-- If missing, run: `~/.picoclaw/skills/oluto/scripts/oluto-setup.sh BASE_URL EMAIL PASSWORD [BUSINESS_ID]`
+- If missing, run: `~/workspace/skills/oluto/scripts/oluto-setup.sh BASE_URL EMAIL PASSWORD [BUSINESS_ID]`
 
 ## How to Make API Calls
 
@@ -40,7 +40,7 @@ Auth is handled automatically. When `OLUTO_JWT_TOKEN` is set (from webhook), it 
 
 ### Generic API Call
 ```bash
-~/.picoclaw/skills/oluto/scripts/oluto-api.sh METHOD PATH [JSON_BODY]
+~/workspace/skills/oluto/scripts/oluto-api.sh METHOD PATH [JSON_BODY]
 ```
 
 Always replace `BID` in paths with `$OLUTO_BUSINESS_ID`.
@@ -50,21 +50,21 @@ Examples:
 BID="$OLUTO_BUSINESS_ID"
 
 # GET request
-~/.picoclaw/skills/oluto/scripts/oluto-api.sh GET /api/v1/businesses/$BID/transactions/summary
+~/workspace/skills/oluto/scripts/oluto-api.sh GET /api/v1/businesses/$BID/transactions/summary
 
 # POST request with JSON body
-~/.picoclaw/skills/oluto/scripts/oluto-api.sh POST /api/v1/businesses/$BID/transactions '{"vendor_name":"Staples","amount":"50.00","transaction_date":"2026-02-20","currency":"CAD"}'
+~/workspace/skills/oluto/scripts/oluto-api.sh POST /api/v1/businesses/$BID/transactions '{"vendor_name":"Staples","amount":"50.00","transaction_date":"2026-02-20","currency":"CAD"}'
 
 # PATCH request
-~/.picoclaw/skills/oluto/scripts/oluto-api.sh PATCH /api/v1/businesses/$BID/transactions/TID '{"status":"posted"}'
+~/workspace/skills/oluto/scripts/oluto-api.sh PATCH /api/v1/businesses/$BID/transactions/TID '{"status":"posted"}'
 
 # DELETE request
-~/.picoclaw/skills/oluto/scripts/oluto-api.sh DELETE /api/v1/businesses/$BID/transactions/TID
+~/workspace/skills/oluto/scripts/oluto-api.sh DELETE /api/v1/businesses/$BID/transactions/TID
 ```
 
 ### Dashboard Shortcut
 ```bash
-~/.picoclaw/skills/oluto/scripts/oluto-dashboard.sh
+~/workspace/skills/oluto/scripts/oluto-dashboard.sh
 ```
 (Automatically uses `OLUTO_BUSINESS_ID` — no argument needed.)
 
@@ -333,7 +333,7 @@ oluto-api.sh GET /api/v1/businesses/BID/receipts/RID/download
 oluto-api.sh DELETE /api/v1/businesses/BID/receipts/RID
 
 # Upload receipt for a bill (multipart — use curl)
-TOKEN=$(~/.picoclaw/skills/oluto/scripts/oluto-auth.sh)
+TOKEN=$(~/workspace/skills/oluto/scripts/oluto-auth.sh)
 BASE_URL=$(jq -r '.base_url' ~/.oluto-config.json)
 curl -s -H "Authorization: Bearer $TOKEN" \
   -F "file=@/path/to/receipt.jpg" -F "run_ocr=true" \
@@ -344,7 +344,7 @@ oluto-api.sh GET /api/v1/businesses/BID/bills/BILL_ID/receipts
 
 # Extract OCR from a file (without saving)
 # Note: This requires multipart upload — use curl directly:
-TOKEN=$(~/.picoclaw/skills/oluto/scripts/oluto-auth.sh)
+TOKEN=$(~/workspace/skills/oluto/scripts/oluto-auth.sh)
 BASE_URL=$(jq -r '.base_url' ~/.oluto-config.json)
 curl -s -H "Authorization: Bearer $TOKEN" \
   -F "file=@/path/to/receipt.jpg" \
@@ -379,7 +379,7 @@ When you receive a message like "Generate the daily financial briefing" (typical
 
 Run the briefing script to gather all data in one call:
 ```bash
-~/.picoclaw/skills/oluto/scripts/oluto-briefing.sh
+~/workspace/skills/oluto/scripts/oluto-briefing.sh
 ```
 
 This returns JSON with: `dashboard`, `overdue_invoices`, `overdue_bills`, `open_bills`, `recent_transactions`.
@@ -496,7 +496,7 @@ Process receipt images ONLY when the user explicitly indicates it's a receipt. L
 ### How to Detect a Receipt Upload
 The message will contain an `[attached_file: ...]` marker with the local file path:
 ```
-[attached_file: /home/picoclaw/.picoclaw/workspace/media/abc12345_receipt.jpg]
+[attached_file: /zeroclaw-data/workspace/media/abc12345_receipt.jpg]
 ```
 The file is already saved locally. Do NOT try to `read_file` on it — PDFs and images are binary and unreadable as text. Instead, pass the path directly to `oluto-ocr.sh` as shown below.
 
@@ -506,7 +506,7 @@ Only proceed with receipt processing if the user's caption or recent messages in
 
 Use `oluto-receipt.sh` for automatic receipt processing (OCR → categorize → match/create):
 ```bash
-~/.picoclaw/skills/oluto/scripts/oluto-receipt.sh FILE_PATH
+~/workspace/skills/oluto/scripts/oluto-receipt.sh FILE_PATH
 ```
 Replace `FILE_PATH` with the actual path from `[attached_file: ...]`.
 
@@ -531,7 +531,7 @@ After the receipt script runs, present the summary and ask the user:
 
 If the user wants to **post it**, use:
 ```bash
-~/.picoclaw/skills/oluto/scripts/oluto-update-expense.sh TRANSACTION_ID status=posted
+~/workspace/skills/oluto/scripts/oluto-update-expense.sh TRANSACTION_ID status=posted
 ```
 Replace `TRANSACTION_ID` with the ID from the receipt script output.
 
@@ -541,19 +541,19 @@ If the user wants to **keep it as draft**, acknowledge and move on. Draft transa
 
 If the extracted data is wrong (vendor, date, category), use `oluto-update-expense.sh` to correct it:
 ```bash
-~/.picoclaw/skills/oluto/scripts/oluto-update-expense.sh TRANSACTION_ID field=value [field=value ...]
+~/workspace/skills/oluto/scripts/oluto-update-expense.sh TRANSACTION_ID field=value [field=value ...]
 ```
 
 Examples:
 ```bash
 # Fix category
-~/.picoclaw/skills/oluto/scripts/oluto-update-expense.sh abc123 category="Software / Subscriptions"
+~/workspace/skills/oluto/scripts/oluto-update-expense.sh abc123 category="Software / Subscriptions"
 
 # Fix vendor and date
-~/.picoclaw/skills/oluto/scripts/oluto-update-expense.sh abc123 vendor_name="Moonshot AI" transaction_date=2026-02-15
+~/workspace/skills/oluto/scripts/oluto-update-expense.sh abc123 vendor_name="Moonshot AI" transaction_date=2026-02-15
 
 # Post a draft
-~/.picoclaw/skills/oluto/scripts/oluto-update-expense.sh abc123 status=posted
+~/workspace/skills/oluto/scripts/oluto-update-expense.sh abc123 status=posted
 ```
 
 Supported fields: `vendor_name`, `amount`, `currency`, `description`, `transaction_date`, `category`, `classification`, `status`, `gst_amount`, `pst_amount`.
@@ -581,7 +581,7 @@ Look for file extensions `.csv` or `.pdf` in the `[attached_file: ...]` marker, 
 1. Acknowledge: "I'll import your bank statement now." For PDFs add: "Processing your PDF — this may take a moment."
 2. Run a SINGLE script that parses AND imports in one shot:
 ```bash
-~/.picoclaw/skills/oluto/scripts/oluto-import-statement.sh FILE_PATH
+~/workspace/skills/oluto/scripts/oluto-import-statement.sh FILE_PATH
 ```
 Replace `FILE_PATH` with the path from `[attached_file: ...]`.
 
@@ -642,7 +642,7 @@ When the user says things like "Log an expense", "I spent $X at Y", "I paid $X t
 
 2. If amount and vendor are both present, create the expense immediately:
 ```bash
-~/.picoclaw/skills/oluto/scripts/oluto-create-expense.sh VENDOR AMOUNT DATE [CATEGORY] [GST] [PST] [DESCRIPTION]
+~/workspace/skills/oluto/scripts/oluto-create-expense.sh VENDOR AMOUNT DATE [CATEGORY] [GST] [PST] [DESCRIPTION]
 ```
 
 3. If required fields are missing, ask conversationally:
@@ -670,7 +670,7 @@ When recording income, you MUST calculate and include the GST/HST/PST collected.
 **Step 1: Determine the business's tax profile.**
 Look up the business info to find the province/tax profile:
 ```bash
-~/.picoclaw/skills/oluto/scripts/oluto-api.sh GET /api/v1/businesses/BID
+~/workspace/skills/oluto/scripts/oluto-api.sh GET /api/v1/businesses/BID
 ```
 Replace `BID` with the business ID from the environment.
 
@@ -717,7 +717,7 @@ If the user says the amount is "before tax" or "plus tax", calculate differently
 
 3. If amount and payer are both present, create the income immediately:
 ```bash
-~/.picoclaw/skills/oluto/scripts/oluto-record-income.sh PAYER AMOUNT DATE CATEGORY GST PST DESCRIPTION
+~/workspace/skills/oluto/scripts/oluto-record-income.sh PAYER AMOUNT DATE CATEGORY GST PST DESCRIPTION
 ```
 Always include the calculated GST and PST values.
 
@@ -728,7 +728,7 @@ Always include the calculated GST and PST values.
 
 6. After recording, post it immediately in the SAME turn — do NOT ask the user:
 ```bash
-~/.picoclaw/skills/oluto/scripts/oluto-update-expense.sh TRANSACTION_ID status=posted
+~/workspace/skills/oluto/scripts/oluto-update-expense.sh TRANSACTION_ID status=posted
 ```
 Use the transaction ID returned from the record-income script.
 
@@ -759,19 +759,19 @@ When the user says things like "Create an invoice", "Invoice John for $5,000", "
 
 If the user named a customer, search for them:
 ```bash
-~/.picoclaw/skills/oluto/scripts/oluto-list-customers.sh "CUSTOMER_NAME"
+~/workspace/skills/oluto/scripts/oluto-list-customers.sh "CUSTOMER_NAME"
 ```
 - If found, confirm: "I found [name] ([email]). Is that correct?"
 - If not found, ask: "I don't have a customer named [X]. Would you like me to create them? I'll need their name and optionally an email."
 - To create a new customer:
 ```bash
-~/.picoclaw/skills/oluto/scripts/oluto-api.sh POST /api/v1/businesses/BID/contacts '{"contact_type":"Customer","name":"NAME","email":"EMAIL"}'
+~/workspace/skills/oluto/scripts/oluto-api.sh POST /api/v1/businesses/BID/contacts '{"contact_type":"Customer","name":"NAME","email":"EMAIL"}'
 ```
 Replace `BID` with the business ID from the environment.
 
 **Step 2: Get the next invoice number**
 ```bash
-~/.picoclaw/skills/oluto/scripts/oluto-next-invoice-number.sh
+~/workspace/skills/oluto/scripts/oluto-next-invoice-number.sh
 ```
 Present it: "The next invoice number is INV-042. OK to use this, or would you prefer a different number?"
 
@@ -786,7 +786,7 @@ Parse line items from the conversation. For each line item you need:
 
 For the `revenue_account_id`, look up available accounts:
 ```bash
-~/.picoclaw/skills/oluto/scripts/oluto-get-revenue-accounts.sh
+~/workspace/skills/oluto/scripts/oluto-get-revenue-accounts.sh
 ```
 Use the first Revenue account if only one exists, or ask the user to pick if multiple exist.
 
@@ -807,7 +807,7 @@ Ask: "Does this look correct? I'll create it as a draft."
 
 **Step 6: Create the invoice**
 ```bash
-~/.picoclaw/skills/oluto/scripts/oluto-create-invoice.sh 'JSON_PAYLOAD'
+~/workspace/skills/oluto/scripts/oluto-create-invoice.sh 'JSON_PAYLOAD'
 ```
 
 Where JSON_PAYLOAD follows this structure:
@@ -836,7 +836,7 @@ Ask: "Would you like me to mark it as sent?"
 
 If yes:
 ```bash
-~/.picoclaw/skills/oluto/scripts/oluto-api.sh PUT /api/v1/businesses/BID/invoices/INVOICE_ID/status '{"status":"sent"}'
+~/workspace/skills/oluto/scripts/oluto-api.sh PUT /api/v1/businesses/BID/invoices/INVOICE_ID/status '{"status":"sent"}'
 ```
 
 ### Shortcut for Simple Invoices
@@ -862,14 +862,14 @@ When the user says things like "Record a payment", "John paid invoice INV-042", 
 
 If the user mentions a specific invoice number, find it:
 ```bash
-~/.picoclaw/skills/oluto/scripts/oluto-list-invoices.sh sent
+~/workspace/skills/oluto/scripts/oluto-list-invoices.sh sent
 ```
 Filter the output to find the matching invoice.
 
 If the user mentions a customer name, find their unpaid invoices:
 ```bash
-~/.picoclaw/skills/oluto/scripts/oluto-list-customers.sh "CUSTOMER_NAME"
-~/.picoclaw/skills/oluto/scripts/oluto-list-invoices.sh sent CUSTOMER_ID
+~/workspace/skills/oluto/scripts/oluto-list-customers.sh "CUSTOMER_NAME"
+~/workspace/skills/oluto/scripts/oluto-list-invoices.sh sent CUSTOMER_ID
 ```
 
 **Step 2: Collect payment details**
@@ -885,7 +885,7 @@ If the user mentions a customer name, find their unpaid invoices:
 
 **Step 4: Create the payment**
 ```bash
-~/.picoclaw/skills/oluto/scripts/oluto-record-payment.sh 'JSON_PAYLOAD'
+~/workspace/skills/oluto/scripts/oluto-record-payment.sh 'JSON_PAYLOAD'
 ```
 
 Where JSON_PAYLOAD follows this structure:
@@ -919,6 +919,6 @@ If partially paid: "Invoice INV-042 has a remaining balance of $500.00 (partial 
 ## For Full API Details
 
 Read the reference documents for complete endpoint and model specifications:
-- `~/.picoclaw/skills/oluto/references/api-endpoints.md` — all 86 endpoints
-- `~/.picoclaw/skills/oluto/references/api-models.md` — all request/response schemas
-- `~/.picoclaw/skills/oluto/references/agent-playbooks.md` — per-agent workflows
+- `~/workspace/skills/oluto/references/api-endpoints.md` — all 86 endpoints
+- `~/workspace/skills/oluto/references/api-models.md` — all request/response schemas
+- `~/workspace/skills/oluto/references/agent-playbooks.md` — per-agent workflows

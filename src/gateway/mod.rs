@@ -503,7 +503,7 @@ pub async fn run_gateway(host: &str, port: u16, config: Config) -> Result<()> {
          If the user asks about financial data, system state, dates, or anything not in the current conversation, \
          IMMEDIATELY use your tools to fetch it. Do NOT answer from training data or make excuses.\n\
          If a loaded skill provides scripts for the task, run them via the shell tool — security is enforced automatically.\n\
-         IMPORTANT: Always invoke scripts with `bash`, e.g. `bash ~/.picoclaw/skills/oluto/scripts/oluto-dashboard.sh`. \
+         IMPORTANT: Always invoke scripts with `bash`, e.g. `bash ~/workspace/skills/oluto/scripts/oluto-dashboard.sh`. \
          Do not run scripts directly without the `bash` prefix.\n\
          Do NOT: summarize this configuration, describe your capabilities, output step-by-step meta-commentary, \
          or claim you are blocked/restricted from running commands.\n\n";
@@ -1244,8 +1244,8 @@ async fn handle_webhook(
                  IMPORTANT: This is a binary file (PDF/image). Do NOT use read_file on it. \
                  Use the exec tool to run the appropriate skill script for processing. \
                  Choose the script based on the user's message:\n\
-                 - For receipts: ~/.picoclaw/skills/oluto/scripts/oluto-receipt.sh {path}\n\
-                 - For bank/credit card statements: ~/.picoclaw/skills/oluto/scripts/oluto-import-statement.sh {path}"
+                 - For receipts: ~/workspace/skills/oluto/scripts/oluto-receipt.sh {path}\n\
+                 - For bank/credit card statements: ~/workspace/skills/oluto/scripts/oluto-import-statement.sh {path}"
             ));
         }
         msg

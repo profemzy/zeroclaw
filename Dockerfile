@@ -88,13 +88,9 @@ ENV ZEROCLAW_GATEWAY_PORT=3000
 COPY skills/ /zeroclaw-data/workspace/skills/
 RUN chmod +x /zeroclaw-data/workspace/skills/oluto/scripts/*.sh 2>/dev/null || true
 
-# Create .picoclaw/skills symlink so skill scripts at ~/workspace/skills/
-# are accessible via the ~/.picoclaw/skills/ path referenced in SKILL.md.
-# Also pre-create .oluto-token.json so auth scripts can cache tokens.
-RUN mkdir -p /zeroclaw-data/.picoclaw \
-    && ln -sf /zeroclaw-data/workspace/skills /zeroclaw-data/.picoclaw/skills \
-    && touch /zeroclaw-data/.oluto-token.json \
-    && chown -R 65534:65534 /zeroclaw-data/.picoclaw /zeroclaw-data/.oluto-token.json \
+# Pre-create .oluto-token.json so auth scripts can cache tokens.
+RUN touch /zeroclaw-data/.oluto-token.json \
+    && chown -R 65534:65534 /zeroclaw-data/.oluto-token.json \
     && chown -R 65534:65534 /zeroclaw-data/workspace/skills
 
 WORKDIR /zeroclaw-data
