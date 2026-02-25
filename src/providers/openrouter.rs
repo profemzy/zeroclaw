@@ -611,7 +611,7 @@ mod tests {
         let converted = convert_messages(&messages);
         assert_eq!(converted.len(), 1);
         assert_eq!(converted[0].role, "assistant");
-        assert_eq!(converted[0].content.as_deref(), Some("Using tool"));
+        assert_eq!(converted[0].content.as_ref().and_then(|c| c.as_text_str()), Some("Using tool"));
 
         let tool_calls = converted[0].tool_calls.as_ref().unwrap();
         assert_eq!(tool_calls.len(), 1);
@@ -631,7 +631,7 @@ mod tests {
         assert_eq!(converted.len(), 1);
         assert_eq!(converted[0].role, "tool");
         assert_eq!(converted[0].tool_call_id.as_deref(), Some("call_xyz"));
-        assert_eq!(converted[0].content.as_deref(), Some("done"));
+        assert_eq!(converted[0].content.as_ref().and_then(|c| c.as_text_str()), Some("done"));
         assert!(converted[0].tool_calls.is_none());
     }
 }

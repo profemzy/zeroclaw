@@ -494,48 +494,93 @@ When the user asks you to draft an email, reminder, or any communication:
 Process receipt images ONLY when the user explicitly indicates it's a receipt. Look for keywords like "receipt", "snap", "expense", "capture", "log this", or "book this" in the caption or recent message context. If the user sends a photo without receipt context, do NOT auto-process it — just respond normally.
 
 ### How to Detect a Receipt Upload
-The message will contain an `[attached_file: ...]` marker with the local file path:
+The message will contain an `[IMAGE:...]` marker with the local file path:
 ```
-[attached_file: /zeroclaw-data/workspace/media/abc12345_receipt.jpg]
+[IMAGE:/zeroclaw-data/workspace/media/abc12345_receipt.jpg]
 ```
-The file is already saved locally. Do NOT try to `read_file` on it — PDFs and images are binary and unreadable as text. Instead, pass the path directly to `oluto-ocr.sh` as shown below.
+The image is sent to you as a vision input — you can see and analyze it directly.
 
 Only proceed with receipt processing if the user's caption or recent messages indicate this is a receipt (e.g., "receipt", "snap this", "log this expense", "process the attached receipt").
 
-### Preferred: One-Step Processing
+### Step 1: Extract Receipt Data Using Vision
 
-Use `oluto-receipt.sh` for automatic receipt processing (OCR → categorize → match/create):
+You can SEE the receipt image directly. Analyze it and extract the following fields:
+
+**Required fields:**
+- **vendor**: Business/company name (clean, no addresses or taglines)
+- **amount_cad**: Final total in Canadian dollars (as a decimal string, e.g. "26.91")
+- **date**: Transaction date in YYYY-MM-DD format
+- **category**: Expense category (see category rules below)
+
+**Currency handling (CRITICAL):**
+- If the receipt shows prices in USD (US$, USD) but also shows a CAD conversion (e.g. "Charged CA$26.91"), use the **CAD amount** as `amount_cad`
+- If the receipt is in a foreign currency with an exchange rate shown, calculate the CAD equivalent
+- If the receipt is in CAD or shows only $ without specifying currency, treat as CAD
+- Always note the original currency and amount if different from CAD
+
+**Tax fields (Canadian context):**
+- **gst_amount**: GST or HST amount (as decimal string, "0.00" if not shown)
+- **pst_amount**: PST or QST amount (as decimal string, "0.00" if not shown)
+- Provincial tax rules:
+  - Ontario: HST 13% → report as gst_amount only
+  - British Columbia: GST 5% + PST 7% → split accordingly
+  - Alberta: GST 5% only, no PST
+  - Quebec: GST 5% + QST 9.975% → report QST as pst_amount
+
+**Optional fields (extract if visible):**
+- **invoice_number**: Receipt or invoice number
+- **payment_method**: credit card, debit, cash, e-transfer
+- **line_items**: Individual items with description, quantity, unit price
+
+**Category selection:** Choose the most specific match from common Canadian business categories:
+- Software / Subscriptions (SaaS, apps, cloud services)
+- Office Supplies (stationery, printer supplies)
+- Meals and Entertainment (restaurants, coffee, client meals)
+- Travel (flights, hotels, car rentals, parking)
+- Professional Services (consulting, legal, accounting)
+- Advertising and Marketing (ads, design, printing)
+- Utilities (phone, internet, electricity)
+- Rent (office space)
+- Equipment (computers, furniture, tools)
+- Vehicle Expenses (gas, maintenance, insurance)
+- Management and administration fees (general admin, management services)
+
+### Step 2: Create Draft Expense
+
+Once you have extracted the data, create the expense using the script:
 ```bash
-~/workspace/skills/oluto/scripts/oluto-receipt.sh FILE_PATH
+~/workspace/skills/oluto/scripts/oluto-receipt.sh FILE_PATH VENDOR AMOUNT_CAD DATE CATEGORY GST_AMOUNT PST_AMOUNT
 ```
-Replace `FILE_PATH` with the actual path from `[attached_file: ...]`.
 
-This script automatically:
-- Extracts text via OCR
-- Parses vendor, amount, date, and tax from the receipt
-- Calls AI category suggestion
-- Matches to existing transactions or creates a new draft expense
-- Attaches the receipt image to Azure Blob Storage
+**Arguments:**
+1. `FILE_PATH` — the image path from `[IMAGE:...]`
+2. `VENDOR` — extracted vendor name (quote if it contains spaces)
+3. `AMOUNT_CAD` — the CAD amount as a positive number (script handles negation)
+4. `DATE` — YYYY-MM-DD format
+5. `CATEGORY` — expense category (quote if it contains spaces)
+6. `GST_AMOUNT` — GST/HST amount (default "0.00")
+7. `PST_AMOUNT` — PST/QST amount (default "0.00")
 
-Output example:
-```
-Receipt processed: $26.91 at Moonshot AI Pte. Ltd. on 2026-02-15 (ID: a1b2c3d4)
-Category: Software / Subscriptions
-Saved as draft expense. Receipt image stored.
+Example:
+```bash
+~/workspace/skills/oluto/scripts/oluto-receipt.sh /zeroclaw-data/workspace/media/abc12345_receipt.jpg "MOONSHOT AI PTE. LTD." "26.91" "2026-02-15" "Software / Subscriptions" "0.00" "0.00"
 ```
 
 ### After Processing — Ask About Posting
 
-After the receipt script runs, present the summary and ask the user:
-- "I've saved this as a draft. Would you like me to post it to your ledger, or keep it as a draft for review?"
+Present the extracted summary to the user, including:
+- Vendor, amount (note if converted from foreign currency), date
+- Category, tax breakdown
+- Any notable line items
+
+Then ask: "Would you like me to **post this expense to your ledger**, or **keep it as a draft** for review?"
 
 If the user wants to **post it**, use:
 ```bash
 ~/workspace/skills/oluto/scripts/oluto-update-expense.sh TRANSACTION_ID status=posted
 ```
-Replace `TRANSACTION_ID` with the ID from the receipt script output.
 
-If the user wants to **keep it as draft**, acknowledge and move on. Draft transactions can be posted later.
+If the user wants to **keep it as draft**, acknowledge and move on.
 
 ### Correcting an Expense
 
@@ -560,11 +605,12 @@ Supported fields: `vendor_name`, `amount`, `currency`, `description`, `transacti
 
 ### STRICT Rules
 - ONLY process when user explicitly indicates it's a receipt (caption or context keywords)
-- Extract the file path from `[attached_file: ...]` — do NOT hardcode paths
-- Do NOT use `read_file` on receipt files — they are binary (PDF/image) and will fail or return garbage
-- Use `oluto-receipt.sh` for processing — do NOT create your own scripts or call curl directly
+- Extract the file path from `[IMAGE:...]` — do NOT hardcode paths
+- ANALYZE the receipt image directly using your vision — do NOT call oluto-ocr.sh
+- Handle currency conversion: if receipt is in USD/EUR but shows CAD equivalent, use the CAD amount
+- Use `oluto-receipt.sh` with extracted arguments to create the expense and attach the receipt
 - Use `oluto-update-expense.sh` to correct any fields the user says are wrong
-- Do NOT show raw OCR text or JSON to the user — only show the final summary
+- Do NOT show raw JSON to the user — only show the final human-readable summary
 - After creating the draft, ALWAYS ask if the user wants to post it or keep it as a draft
 
 ---

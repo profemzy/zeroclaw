@@ -1239,15 +1239,35 @@ async fn handle_webhook(
         let mut msg = message;
         for path in &media_paths {
             use std::fmt::Write;
-            let _ = write!(
-                msg,
-                "\n[attached_file: {path}]\n\
-                 IMPORTANT: This is a binary file (PDF/image). Do NOT use read_file on it. \
-                 Use the exec tool to run the appropriate skill script for processing. \
-                 Choose the script based on the user's message:\n\
-                 - For receipts: ~/workspace/skills/oluto/scripts/oluto-receipt.sh {path}\n\
-                 - For bank/credit card statements: ~/workspace/skills/oluto/scripts/oluto-import-statement.sh {path}"
-            );
+            let lower = path.to_ascii_lowercase();
+            let is_image = lower.ends_with(".png")
+                || lower.ends_with(".jpg")
+                || lower.ends_with(".jpeg")
+                || lower.ends_with(".webp")
+                || lower.ends_with(".gif")
+                || lower.ends_with(".bmp");
+
+            if is_image {
+                // Use [IMAGE:path] marker so the multimodal pipeline sends
+                // the image as a vision content block to the LLM.
+                // The LLM can then analyze the image directly (e.g. receipt OCR).
+                let _ = write!(
+                    msg,
+                    "\n[IMAGE:{path}]\n\
+                     The image above has been attached for direct visual analysis. \
+                     If this is a receipt, extract the data directly from the image. \
+                     For bank/credit card statements: ~/workspace/skills/oluto/scripts/oluto-import-statement.sh {path}"
+                );
+            } else {
+                // Non-image files (CSV, PDF, etc.) — use shell scripts
+                let _ = write!(
+                    msg,
+                    "\n[attached_file: {path}]\n\
+                     IMPORTANT: This is a binary file. Do NOT use read_file on it. \
+                     Use the exec tool to run the appropriate skill script for processing:\n\
+                     - For bank/credit card statements: ~/workspace/skills/oluto/scripts/oluto-import-statement.sh {path}"
+                );
+            }
         }
         msg
     };

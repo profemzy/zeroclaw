@@ -2,6 +2,7 @@
 //! Most LLM APIs follow the same `/v1/chat/completions` format.
 //! This module provides a single implementation that works for all of them.
 
+use crate::providers::openai_wire::{NativeContent, build_vision_content};
 use crate::providers::traits::{
     ChatMessage, ChatRequest as ProviderChatRequest, ChatResponse as ProviderChatResponse,
     Provider, StreamChunk, StreamError, StreamOptions, StreamResult, ToolCall as ProviderToolCall,
@@ -430,7 +431,7 @@ struct NativeChatRequest {
 struct NativeMessage {
     role: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    content: Option<String>,
+    content: Option<NativeContent>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tool_call_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -826,7 +827,7 @@ impl OpenAiCompatibleProvider {
                                 let content = value
                                     .get("content")
                                     .and_then(serde_json::Value::as_str)
-                                    .map(ToString::to_string);
+                                    .map(|s| NativeContent::Text(s.to_string()));
 
                                 return NativeMessage {
                                     role: "assistant".to_string(),
@@ -848,8 +849,8 @@ impl OpenAiCompatibleProvider {
                         let content = value
                             .get("content")
                             .and_then(serde_json::Value::as_str)
-                            .map(ToString::to_string)
-                            .or_else(|| Some(message.content.clone()));
+                            .map(|s| NativeContent::Text(s.to_string()))
+                            .or_else(|| Some(NativeContent::Text(message.content.clone())));
 
                         return NativeMessage {
                             role: "tool".to_string(),
@@ -860,9 +861,21 @@ impl OpenAiCompatibleProvider {
                     }
                 }
 
+                // For user messages, convert [IMAGE:] markers to vision content blocks
+                if message.role == "user" {
+                    if let Some(vision_content) = build_vision_content(&message.content) {
+                        return NativeMessage {
+                            role: message.role.clone(),
+                            content: Some(vision_content),
+                            tool_call_id: None,
+                            tool_calls: None,
+                        };
+                    }
+                }
+
                 NativeMessage {
                     role: message.role.clone(),
-                    content: Some(message.content.clone()),
+                    content: Some(NativeContent::Text(message.content.clone())),
                     tool_call_id: None,
                     tool_calls: None,
                 }
@@ -955,7 +968,7 @@ impl Provider for OpenAiCompatibleProvider {
     fn capabilities(&self) -> crate::providers::traits::ProviderCapabilities {
         crate::providers::traits::ProviderCapabilities {
             native_tool_calling: true,
-            vision: false,
+            vision: true,
         }
     }
 
@@ -2022,7 +2035,7 @@ mod tests {
         assert_eq!(converted.len(), 1);
         assert_eq!(converted[0].role, "tool");
         assert_eq!(converted[0].tool_call_id.as_deref(), Some("call_abc"));
-        assert_eq!(converted[0].content.as_deref(), Some("done"));
+        assert_eq!(converted[0].content.as_ref().and_then(|c| c.as_text_str()), Some("done"));
     }
 
     #[test]

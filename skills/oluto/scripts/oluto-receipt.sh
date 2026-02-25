@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
-# oluto-receipt.sh — Full receipt processing: OCR → categorize → match → create transaction
-# Usage: oluto-receipt.sh FILE_PATH
+# oluto-receipt.sh — Create expense from LLM-extracted receipt data + attach image
+# Usage: oluto-receipt.sh FILE_PATH VENDOR AMOUNT DATE [CATEGORY] [GST] [PST]
 # Output: Human-readable summary (NOT raw JSON)
 #
+# The LLM extracts receipt data via vision analysis and passes pre-validated
+# fields to this script. This script handles: transaction matching, expense
+# creation, and receipt image attachment.
+#
 # NOTE: This runs on Alpine/BusyBox — do NOT use grep -P (Perl regex).
-# Use grep -E (extended regex) or sed instead.
 set -euo pipefail
 
 export PATH="$HOME/.local/bin:$PATH"
@@ -16,201 +19,35 @@ MATCH="$SCRIPT_DIR/oluto-match-transaction.sh"
 ATTACH="$SCRIPT_DIR/oluto-attach-receipt.sh"
 CONFIG_FILE="$HOME/.oluto-config.json"
 
-if [ $# -lt 1 ]; then
-    echo "Error: Please provide a file path."
+if [ $# -lt 4 ]; then
+    echo "Usage: oluto-receipt.sh FILE_PATH VENDOR AMOUNT DATE [CATEGORY] [GST] [PST]"
+    echo "Error: Please provide at least FILE_PATH, VENDOR, AMOUNT, and DATE."
     exit 1
 fi
 
 FILE_PATH="$1"
+VENDOR="$2"
+AMOUNT="$3"
+DATE="$4"
+CATEGORY="${5:-Meals and Entertainment}"
+GST_AMOUNT="${6:-0.00}"
+PST_AMOUNT="${7:-0.00}"
 
 if [ ! -f "$FILE_PATH" ]; then
     echo "Error: File not found at $FILE_PATH"
     exit 1
 fi
 
-BASE_URL=$(jq -r '.base_url' "$CONFIG_FILE")
-BID="${OLUTO_BUSINESS_ID:-$(jq -r '.default_business_id' "$CONFIG_FILE")}"
-TOKEN=$("$AUTH")
-
-# Step 1: OCR extraction
-OCR_RESP=$(curl -sf -H "Authorization: Bearer $TOKEN" \
-    -F "file=@$FILE_PATH" \
-    "${BASE_URL}/api/v1/businesses/${BID}/receipts/extract-ocr" 2>/dev/null || echo '{"success":false}')
-
-SUCCESS=$(echo "$OCR_RESP" | jq -r '.success // false')
-if [ "$SUCCESS" != "true" ]; then
-    echo "Error: Could not read the receipt image."
+# Validate amount is numeric
+if ! echo "$AMOUNT" | grep -qE '^[0-9]+(\.[0-9]+)?$'; then
+    echo "Error: Invalid amount '$AMOUNT'. Expected a positive number."
     exit 1
 fi
 
-OCR_DATA=$(echo "$OCR_RESP" | jq '.data.ocr_data')
-RAW_TEXT=$(echo "$OCR_DATA" | jq -r '.raw_text // ""')
+BID="${OLUTO_BUSINESS_ID:-$(jq -r '.default_business_id' "$CONFIG_FILE")}"
+TOKEN=$("$AUTH")
 
-# Extract fields from OCR
-VENDOR=$(echo "$OCR_DATA" | jq -r '.vendor // "Unknown"')
-AMOUNT=$(echo "$OCR_DATA" | jq -r '.amount // "0.00"' | sed 's/[^0-9.]//g')
-DATE=$(echo "$OCR_DATA" | jq -r '.date // ""')
-TAX_AMOUNTS=$(echo "$OCR_DATA" | jq '.tax_amounts // null')
-
-# Ensure AMOUNT has a valid numeric value
-[ -z "$AMOUNT" ] && AMOUNT="0.00"
-
-# --- Helper: extract dollar amount from a line (BusyBox-compatible) ---
-# Matches patterns like $19.00, US$19.00, CA$26.91, $1,234.56
-extract_dollar() {
-    # Match $19.00, US$19.00, CA$26.91, $1,234.56 etc.
-    # Just find the last $ followed by digits — handles all currency prefixes.
-    sed -n 's/.*\$\([0-9,]*[0-9]\.[0-9][0-9]\).*/\1/p' | tr -d ',' | head -1
-}
-
-# Always prefer TOTAL from raw text over OCR amount (OCR often returns subtotal)
-PARSED_TOTAL=$(echo "$RAW_TEXT" | grep -i '^[[:space:]]*total' | extract_dollar || true)
-if [ -n "$PARSED_TOTAL" ]; then
-    AMOUNT="$PARSED_TOTAL"
-elif [ "$AMOUNT" = "0.00" ] || [ "$AMOUNT" = "0" ] || [ "$AMOUNT" = "null" ]; then
-    # Fallback: any line with "total" keyword
-    PARSED_TOTAL=$(echo "$RAW_TEXT" | grep -i 'total' | extract_dollar || true)
-    if [ -n "$PARSED_TOTAL" ]; then
-        AMOUNT="$PARSED_TOTAL"
-    fi
-fi
-
-# Check for USD-to-CAD conversion (e.g. "Charged CA$26.91 using 1 USD = 1.4162 CAD")
-# Plain $ defaults to CAD in Canada — only override when there's clear evidence of foreign currency
-HAS_USD=$(echo "$RAW_TEXT" | grep -ciE 'USD|US \$|exchange.rate|converted|conversion' || echo "0")
-if [ "$HAS_USD" -gt 0 ]; then
-    CAD_AMOUNT=$(echo "$RAW_TEXT" | grep -F 'CA$' | extract_dollar || true)
-    if [ -n "$CAD_AMOUNT" ]; then
-        AMOUNT="$CAD_AMOUNT"
-    fi
-fi
-
-# Convert month name to number (BusyBox-compatible — no date -d for month names)
-month_to_num() {
-    case "$(echo "$1" | tr '[:upper:]' '[:lower:]')" in
-        jan|january)   echo "01" ;; feb|february)  echo "02" ;;
-        mar|march)     echo "03" ;; apr|april)     echo "04" ;;
-        may)           echo "05" ;; jun|june)      echo "06" ;;
-        jul|july)      echo "07" ;; aug|august)    echo "08" ;;
-        sep|september) echo "09" ;; oct|october)   echo "10" ;;
-        nov|november)  echo "11" ;; dec|december)  echo "12" ;;
-        *) return 1 ;;
-    esac
-}
-
-# Normalize date to YYYY-MM-DD format
-normalize_date() {
-    local input="$1"
-    [ -z "$input" ] || [ "$input" = "null" ] && return 1
-
-    # Already YYYY-MM-DD
-    if echo "$input" | grep -qE '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'; then
-        echo "$input"
-        return 0
-    fi
-
-    # MM-DD-YYYY or MM/DD/YYYY
-    if echo "$input" | grep -qE '^[0-9]{2}[-/][0-9]{2}[-/][0-9]{4}$'; then
-        local m=$(echo "$input" | cut -c1-2)
-        local d=$(echo "$input" | cut -c4-5)
-        local y=$(echo "$input" | cut -c7-10)
-        echo "${y}-${m}-${d}"
-        return 0
-    fi
-
-    # "Month DD, YYYY" or "Month DD YYYY" (e.g. "February 15, 2026")
-    local parsed_month=$(echo "$input" | sed -n 's/.*\([A-Za-z]\{3,9\}\)[[:space:]]*\([0-9]\{1,2\}\)[,]*[[:space:]]*\([0-9]\{4\}\).*/\1/p')
-    local parsed_day=$(echo "$input" | sed -n 's/.*[A-Za-z]\{3,9\}[[:space:]]*\([0-9]\{1,2\}\)[,]*[[:space:]]*[0-9]\{4\}.*/\1/p')
-    local parsed_year=$(echo "$input" | sed -n 's/.*[A-Za-z]\{3,9\}[[:space:]]*[0-9]\{1,2\}[,]*[[:space:]]*\([0-9]\{4\}\).*/\1/p')
-    if [ -n "$parsed_month" ] && [ -n "$parsed_day" ] && [ -n "$parsed_year" ]; then
-        local mnum
-        mnum=$(month_to_num "$parsed_month") && {
-            printf "%s-%s-%02d\n" "$parsed_year" "$mnum" "$parsed_day"
-            return 0
-        }
-    fi
-
-    # Last resort: replace slashes with dashes
-    echo "$input" | sed 's|/|-|g'
-    return 0
-}
-
-DATE=$(normalize_date "$DATE" || echo "")
-
-# Parse date from raw text if OCR date is empty or invalid
-if [ -z "$DATE" ]; then
-    # Match "Month DD, YYYY" or "Month DD YYYY" patterns in raw text
-    PARSED_DATE=$(echo "$RAW_TEXT" | sed -n 's/.*\(January\|February\|March\|April\|May\|June\|July\|August\|September\|October\|November\|December\|Jan\|Feb\|Mar\|Apr\|Jun\|Jul\|Aug\|Sep\|Oct\|Nov\|Dec\)[[:space:]]*\([0-9]\{1,2\}\)[,]*[[:space:]]*\([0-9]\{4\}\).*/\1 \2 \3/p' | head -1 || true)
-    if [ -n "$PARSED_DATE" ]; then
-        # Parse "Month DD YYYY" without date -d (BusyBox doesn't support it)
-        P_MONTH=$(echo "$PARSED_DATE" | awk '{print $1}')
-        P_DAY=$(echo "$PARSED_DATE" | awk '{print $2}')
-        P_YEAR=$(echo "$PARSED_DATE" | awk '{print $3}')
-        P_MNUM=$(month_to_num "$P_MONTH" || true)
-        if [ -n "$P_MNUM" ] && [ -n "$P_DAY" ] && [ -n "$P_YEAR" ]; then
-            DATE=$(printf "%s-%s-%02d" "$P_YEAR" "$P_MNUM" "$P_DAY")
-        fi
-    fi
-fi
-
-# Calculate tax
-GST_AMOUNT="0.00"
-PST_AMOUNT="0.00"
-if [ "$TAX_AMOUNTS" != "null" ] && [ -n "$TAX_AMOUNTS" ]; then
-    GST_AMOUNT=$(echo "$TAX_AMOUNTS" | jq -r '.gst // "0.00"')
-    PST_AMOUNT=$(echo "$TAX_AMOUNTS" | jq -r '.pst // "0.00"')
-fi
-
-# If tax amounts are still 0, try to find tax line in raw text
-if [ "$GST_AMOUNT" = "0.00" ] || [ "$GST_AMOUNT" = "null" ]; then
-    PARSED_TAX=$(echo "$RAW_TEXT" | grep -iE '^[[:space:]]*(tax|gst|hst)' | extract_dollar || true)
-    if [ -n "$PARSED_TAX" ]; then
-        GST_AMOUNT="$PARSED_TAX"
-    fi
-fi
-
-[ "$GST_AMOUNT" = "null" ] && GST_AMOUNT="0.00"
-[ "$PST_AMOUNT" = "null" ] && PST_AMOUNT="0.00"
-
-# Clean vendor name
-# Remove markdown image syntax like ![img-0.jpeg](img-0.jpeg)
-VENDOR=$(echo "$VENDOR" | sed 's/!\[.*\](.*)//' | sed 's/^#[[:space:]]*//' | xargs)
-
-# If vendor is empty, too short, or generic — try to extract from raw text
-if [ -z "$VENDOR" ] || [ "$VENDOR" = "Unknown" ] || [ "$VENDOR" = "Receipt" ] || [ "${#VENDOR}" -lt 3 ]; then
-    # Strategy 1: Look for company name indicators (Ltd, Inc, LLC, Corp, etc.)
-    PARSED_VENDOR=$(echo "$RAW_TEXT" | sed 's/^#[[:space:]]*//' | grep -iE '(ltd|llc|inc|corp|co\.|pte|limited|gmbh|plc)' | head -1 | xargs || true)
-
-    # Strategy 2: First meaningful non-header line
-    if [ -z "$PARSED_VENDOR" ] || [ "${#PARSED_VENDOR}" -ge 60 ]; then
-        PARSED_VENDOR=$(echo "$RAW_TEXT" | sed 's/^#[[:space:]]*//' | grep -v '^\s*$' | \
-            grep -viE '^(receipt|invoice|order|bill|payment|date|total|subtotal|tax|amount|qty|item|description|price|charged|transaction|#|---|img)' | \
-            head -1 | xargs || true)
-    fi
-
-    if [ -n "$PARSED_VENDOR" ] && [ "${#PARSED_VENDOR}" -ge 3 ] && [ "${#PARSED_VENDOR}" -lt 60 ]; then
-        VENDOR="$PARSED_VENDOR"
-    fi
-fi
-
-# If amount is 0, don't try to create anything — just report what we found
-if [ "$AMOUNT" = "0.00" ] || [ "$AMOUNT" = "0" ] || [ "$AMOUNT" = "null" ] || [ -z "$AMOUNT" ]; then
-    echo "Receipt from $VENDOR (date: ${DATE:-unknown})"
-    echo "Amount could not be extracted. Please provide the total so I can log it."
-    exit 0
-fi
-
-# Step 2: Get AI category suggestion from LedgerForge
-CATEGORY="Meals and Entertainment"
-SUGGEST_BODY=$(jq -n --arg vendor "$VENDOR" --arg amount "$AMOUNT" \
-    '{vendor_name: $vendor, amount: $amount}')
-SUGGEST_RESP=$("$API" POST "/api/v1/businesses/$BID/transactions/suggest-category" "$SUGGEST_BODY" 2>/dev/null || true)
-SUGGESTED=$(echo "$SUGGEST_RESP" | jq -r '.category // empty' 2>/dev/null || true)
-if [ -n "$SUGGESTED" ]; then
-    CATEGORY="$SUGGESTED"
-fi
-
-# Step 3: Try to match existing transaction
+# Step 1: Try to match existing transaction
 MATCHES="[]"
 if [ -n "$DATE" ]; then
     MATCHES=$("$MATCH" "$AMOUNT" "$DATE" "$VENDOR" 2>/dev/null || echo '[]')
@@ -218,7 +55,7 @@ fi
 
 MATCH_COUNT=$(echo "$MATCHES" | jq 'length' 2>/dev/null || echo 0)
 
-# Step 4: Handle result
+# Step 2: Handle result
 if [ "$MATCH_COUNT" -gt 0 ]; then
     # Found matching transaction — attach receipt to it
     MATCH_VENDOR=$(echo "$MATCHES" | jq -r '.[0].vendor_name // "Unknown"')
@@ -226,7 +63,7 @@ if [ "$MATCH_COUNT" -gt 0 ]; then
     MATCH_DATE=$(echo "$MATCHES" | jq -r '.[0].transaction_date // "unknown"')
     MATCH_ID=$(echo "$MATCHES" | jq -r '.[0].id // ""')
 
-    # Attach receipt image to the matched transaction (Azure Blob) and clean up local file
+    # Attach receipt image to the matched transaction
     if [ -n "$MATCH_ID" ]; then
         "$ATTACH" "$MATCH_ID" "$FILE_PATH" 2>/dev/null || true
     fi
@@ -266,7 +103,7 @@ else
     TXN_ID=$(echo "$RESULT" | jq -r '.id // empty' 2>/dev/null || true)
 
     if [ -n "$TXN_ID" ]; then
-        # Attach receipt image to the new transaction (Azure Blob) and clean up local file
+        # Attach receipt image to the new transaction
         "$ATTACH" "$TXN_ID" "$FILE_PATH" 2>/dev/null || true
 
         TAX_INFO=""
