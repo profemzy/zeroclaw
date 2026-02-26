@@ -160,6 +160,18 @@ Path prefix: `/api/v1/businesses/{business_id}/reports`
 | GET | `/balance-sheet` | `as_of_date` (required) | Balance sheet. Returns assets/liabilities/equity entries + totals. |
 | GET | `/ar-aging` | `as_of_date` (required) | A/R aging. Returns buckets: current, 1-30, 31-60, 61-90, 91+ days per customer. |
 
+## Legacy Transactions (Non-Business-Scoped)
+
+These endpoints predate multi-tenancy and are kept for backward compatibility. Prefer the business-scoped `/api/v1/businesses/{business_id}/transactions` endpoints above.
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/v1/transactions` | List transactions (legacy, not business-scoped). |
+| POST | `/api/v1/transactions` | Create transaction (legacy). |
+| GET | `/api/v1/transactions/{id}` | Get transaction by ID (legacy). |
+| DELETE | `/api/v1/transactions/{id}` | Delete transaction (legacy). |
+| PUT | `/api/v1/transactions/{id}/status` | Update transaction status (legacy). |
+
 ## Import (Legacy)
 
 | Method | Path | Description |
