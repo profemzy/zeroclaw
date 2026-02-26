@@ -1073,13 +1073,41 @@ async fn save_uploaded_file(
     }
 }
 
+/// An uploaded file: saved to disk and (for images) pre-encoded as a data URI
+/// so the multimodal pipeline doesn't need to re-read the file.
+struct UploadedFile {
+    /// Absolute path on disk (for shell scripts / receipt attachment).
+    path: String,
+    /// For image files: `Some("data:image/png;base64,...")` built from the
+    /// raw bytes already in memory. `None` for non-image files.
+    data_uri: Option<String>,
+}
+
+/// Detect MIME type from file extension (images only).
+fn mime_from_extension(filename: &str) -> Option<&'static str> {
+    let lower = filename.to_ascii_lowercase();
+    if lower.ends_with(".png") {
+        Some("image/png")
+    } else if lower.ends_with(".jpg") || lower.ends_with(".jpeg") {
+        Some("image/jpeg")
+    } else if lower.ends_with(".webp") {
+        Some("image/webp")
+    } else if lower.ends_with(".gif") {
+        Some("image/gif")
+    } else if lower.ends_with(".bmp") {
+        Some("image/bmp")
+    } else {
+        None
+    }
+}
+
 /// Parse a multipart/form-data webhook body.
-/// Returns `(message, business_id, media_paths)`.
+/// Returns `(message, business_id, uploaded_files)`.
 async fn parse_multipart_webhook(
     body: Bytes,
     boundary: &str,
     workspace_dir: &std::path::Path,
-) -> Result<(String, Option<String>, Vec<String>), (StatusCode, Json<serde_json::Value>)> {
+) -> Result<(String, Option<String>, Vec<UploadedFile>), (StatusCode, Json<serde_json::Value>)> {
     let stream = futures_util::stream::once(async move {
         Ok::<Bytes, std::io::Error>(body)
     });
@@ -1087,7 +1115,7 @@ async fn parse_multipart_webhook(
 
     let mut message = String::new();
     let mut business_id: Option<String> = None;
-    let mut media_paths = Vec::new();
+    let mut uploaded_files = Vec::new();
     let mut file_count = 0usize;
 
     while let Some(field) = multipart.next_field().await.map_err(|e| {
@@ -1118,8 +1146,16 @@ async fn parse_multipart_webhook(
                     let err = serde_json::json!({"error": "File too large (max 20MB)"});
                     return Err((StatusCode::BAD_REQUEST, Json(err)));
                 }
+
+                // For images, build a base64 data URI from the bytes already
+                // in memory — avoids a disk round-trip in the multimodal pipeline.
+                let data_uri = mime_from_extension(&fname).map(|mime| {
+                    use base64::{engine::general_purpose::STANDARD, Engine as _};
+                    format!("data:{mime};base64,{}", STANDARD.encode(&data))
+                });
+
                 if let Some(path) = save_uploaded_file(workspace_dir, &fname, &data).await {
-                    media_paths.push(path);
+                    uploaded_files.push(UploadedFile { path, data_uri });
                 }
             }
             _ => {} // skip unknown fields
@@ -1127,14 +1163,14 @@ async fn parse_multipart_webhook(
     }
 
     if message.trim().is_empty() {
-        if media_paths.is_empty() {
+        if uploaded_files.is_empty() {
             let err = serde_json::json!({"error": "Missing 'message' field"});
             return Err((StatusCode::BAD_REQUEST, Json(err)));
         }
         message = "Process the attached receipt".to_string();
     }
 
-    Ok((message, business_id, media_paths))
+    Ok((message, business_id, uploaded_files))
 }
 
 /// Webhook request body
@@ -1204,7 +1240,7 @@ async fn handle_webhook(
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
 
-    let (message, business_id, media_paths) = if content_type.starts_with("multipart/form-data") {
+    let (message, business_id, uploaded_files) = if content_type.starts_with("multipart/form-data") {
         let boundary = match multer::parse_boundary(content_type) {
             Ok(b) => b,
             Err(_) => {
@@ -1233,30 +1269,23 @@ async fn handle_webhook(
     };
 
     // ── Build final message with file annotations ──
-    let message = if media_paths.is_empty() {
+    let message = if uploaded_files.is_empty() {
         message
     } else {
         let mut msg = message;
-        for path in &media_paths {
+        for file in &uploaded_files {
             use std::fmt::Write;
-            let lower = path.to_ascii_lowercase();
-            let is_image = lower.ends_with(".png")
-                || lower.ends_with(".jpg")
-                || lower.ends_with(".jpeg")
-                || lower.ends_with(".webp")
-                || lower.ends_with(".gif")
-                || lower.ends_with(".bmp");
+            let path = &file.path;
 
-            if is_image {
-                // Use [IMAGE:path] marker so the multimodal pipeline sends
-                // the image as a vision content block to the LLM.
-                // The LLM can then analyze the image directly (e.g. receipt OCR).
+            if let Some(ref data_uri) = file.data_uri {
+                // Image file: embed the data URI directly in the [IMAGE:] marker
+                // so the multimodal pipeline doesn't need to re-read from disk.
                 let _ = write!(
                     msg,
-                    "\n[IMAGE:{path}]\n\
+                    "\n[IMAGE:{data_uri}]\n\
                      The image above has been attached for direct visual analysis. \
                      If this is a receipt, extract the data directly from the image. \
-                     For bank/credit card statements: ~/workspace/skills/oluto/scripts/oluto-import-statement.sh {path}"
+                     The receipt file is saved at: {path}"
                 );
             } else {
                 // Non-image files (CSV, PDF, etc.) — use shell scripts
