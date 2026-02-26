@@ -494,11 +494,7 @@ When the user asks you to draft an email, reminder, or any communication:
 Process receipt images ONLY when the user explicitly indicates it's a receipt. Look for keywords like "receipt", "snap", "expense", "capture", "log this", or "book this" in the caption or recent message context. If the user sends a photo without receipt context, do NOT auto-process it — just respond normally.
 
 ### How to Detect a Receipt Upload
-The message will contain an `[IMAGE:...]` marker with the local file path:
-```
-[IMAGE:/zeroclaw-data/workspace/media/abc12345_receipt.jpg]
-```
-The image is sent to you as a vision input — you can see and analyze it directly.
+The message will contain an `[IMAGE:data:...]` marker with the image embedded as a base64 data URI — you can see and analyze it directly as a vision input. The file path on disk is mentioned in the text following the marker (e.g., "The receipt file is saved at: /zeroclaw-data/workspace/media/abc12345_receipt.jpg").
 
 Only proceed with receipt processing if the user's caption or recent messages indicate this is a receipt (e.g., "receipt", "snap this", "log this expense", "process the attached receipt").
 
@@ -553,7 +549,7 @@ Once you have extracted the data, create the expense using the script:
 ```
 
 **Arguments:**
-1. `FILE_PATH` — the image path from `[IMAGE:...]`
+1. `FILE_PATH` — the image file path mentioned after the `[IMAGE:]` marker (e.g., "The receipt file is saved at: /path/to/file")
 2. `VENDOR` — extracted vendor name (quote if it contains spaces)
 3. `AMOUNT_CAD` — the CAD amount as a positive number (script handles negation)
 4. `DATE` — YYYY-MM-DD format
@@ -605,7 +601,7 @@ Supported fields: `vendor_name`, `amount`, `currency`, `description`, `transacti
 
 ### STRICT Rules
 - ONLY process when user explicitly indicates it's a receipt (caption or context keywords)
-- Extract the file path from `[IMAGE:...]` — do NOT hardcode paths
+- Extract the file path from the text after the `[IMAGE:]` marker ("The receipt file is saved at: ...") — do NOT hardcode paths
 - ANALYZE the receipt image directly using your vision — do NOT call oluto-ocr.sh
 - Handle currency conversion: if receipt is in USD/EUR but shows CAD equivalent, use the CAD amount
 - Use `oluto-receipt.sh` with extracted arguments to create the expense and attach the receipt
