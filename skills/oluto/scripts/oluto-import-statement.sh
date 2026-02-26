@@ -4,10 +4,13 @@
 #
 # This script does everything in one shot:
 #   1. Uploads the file to the parse endpoint
-#   2. Polls for results (PDF only)
+#   2. Polls for results (PDF only) with progressive status updates
 #   3. Confirms/imports the parsed transactions as drafts
+#   4. Cleans up the local file on success
 #
-# Output: Human-readable summary + JSON result
+# Output: Human-readable summary (NOT raw JSON)
+#
+# NOTE: This runs on Alpine/BusyBox — do NOT use grep -P (Perl regex).
 set -euo pipefail
 
 export PATH="$HOME/.local/bin:$PATH"
@@ -51,6 +54,19 @@ if [ "$EXT_LOWER" != "csv" ] && [ "$EXT_LOWER" != "pdf" ]; then
     exit 1
 fi
 
+# Helper: show CSV header on failure for column mapping hints
+show_csv_header() {
+    if [ "$EXT_LOWER" = "csv" ] && [ -f "$FILE_PATH" ]; then
+        HEADER_LINE=$(head -1 "$FILE_PATH" 2>/dev/null || true)
+        if [ -n "$HEADER_LINE" ]; then
+            echo ""
+            echo "CSV_HEADER: $HEADER_LINE"
+            echo "The CSV parser expects columns for: date, description/memo, and amount (or separate debit/credit columns)."
+            echo "Common supported formats: RBC, TD, BMO, Scotiabank, CIBC, Desjardins CSV exports."
+        fi
+    fi
+}
+
 # ── Step 1: Parse ──
 PARSE_URL="${BASE_URL}/api/v1/businesses/${BID}/transactions/import/parse"
 
@@ -68,6 +84,14 @@ if [ "${HTTP_CODE:0:1}" != "2" ]; then
     else
         echo "$BODY"
     fi
+    # Contextual guidance based on HTTP code
+    case "$HTTP_CODE" in
+        400) echo "Tip: The file format may not be recognized. Ensure it is a valid CSV or PDF bank statement." ;;
+        413) echo "Tip: The file is too large. Maximum file size is 20MB." ;;
+        422) echo "Tip: The file was read but could not be parsed. Check that it contains transaction data with dates, descriptions, and amounts." ;;
+        401|403) echo "Tip: Authentication failed. Please re-authenticate." ;;
+    esac
+    show_csv_header
     exit 1
 fi
 
@@ -75,6 +99,7 @@ SUCCESS=$(echo "$BODY" | jq -r '.success // false')
 if [ "$SUCCESS" != "true" ]; then
     MSG=$(echo "$BODY" | jq -r '.error // "Parse failed"')
     echo "ERROR: $MSG" >&2
+    show_csv_header
     exit 1
 fi
 
@@ -88,7 +113,7 @@ PARSE_RESULT=""
 if [ -n "$JOB_ID" ]; then
     # PDF async processing — poll until complete
     echo "Processing PDF statement (job: $JOB_ID)..." >&2
-    MAX_POLLS=60  # 3 minutes max
+    MAX_POLLS=80  # 4 minutes max (80 * 3s = 240s, fits within 300s shell timeout)
     POLL_INTERVAL=3
 
     for i in $(seq 1 $MAX_POLLS); do
@@ -112,12 +137,25 @@ if [ -n "$JOB_ID" ]; then
         elif [ "$JOB_STATUS" = "failed" ]; then
             ERROR=$(echo "$JOB_RESP" | jq -r '.data.error // "Processing failed"')
             echo "ERROR: PDF processing failed: $ERROR" >&2
+            # Surface parse warnings from the failed job
+            JOB_WARNINGS=$(echo "$JOB_RESP" | jq -r '.data.parse_warnings // [] | join("; ")' 2>/dev/null || true)
+            if [ -n "$JOB_WARNINGS" ]; then
+                echo "Parse warnings: $JOB_WARNINGS" >&2
+            fi
+            echo "Tip: If this is a scanned PDF, try re-scanning at higher resolution. If it is a secured/encrypted PDF, try exporting as CSV from your bank's website." >&2
             exit 1
+        fi
+
+        # Progress update every 30 seconds (every 10 polls)
+        if [ $((i % 10)) -eq 0 ]; then
+            ELAPSED=$((i * POLL_INTERVAL))
+            echo "Still processing PDF... (${ELAPSED}s elapsed)" >&2
         fi
     done
 
     if [ -z "$PARSE_RESULT" ]; then
         echo "ERROR: PDF processing timed out after $((MAX_POLLS * POLL_INTERVAL)) seconds." >&2
+        echo "Tip: The PDF may be too large or complex. Try splitting into smaller files, or export as CSV from your bank's website for faster processing." >&2
         exit 1
     fi
 else
@@ -140,7 +178,18 @@ if [ "$WARNINGS" -gt 0 ]; then
 fi
 
 if [ "$TOTAL" -eq 0 ]; then
-    echo "No transactions found — nothing to import."
+    echo "No transactions found in the statement."
+    if [ "$DUPES" -gt 0 ]; then
+        echo "Note: $DUPES duplicate transactions were detected — these may have been imported previously."
+    fi
+    if [ "$EXT_LOWER" = "csv" ] && [ -f "$FILE_PATH" ]; then
+        LINE_COUNT=$(wc -l < "$FILE_PATH" 2>/dev/null | tr -d ' ' || echo "0")
+        HEADER_LINE=$(head -1 "$FILE_PATH" 2>/dev/null || true)
+        echo "CSV has $LINE_COUNT lines. Header: $HEADER_LINE"
+    fi
+    echo "Tip: Verify the file contains transaction data. For CSV files, ensure columns include date, description, and amount."
+    # Clean up — file is no longer useful
+    rm -f "$FILE_PATH" 2>/dev/null || true
     exit 0
 fi
 
@@ -168,6 +217,10 @@ if [ "${HTTP_CODE:0:1}" != "2" ]; then
     else
         echo "$BODY"
     fi
+    case "$HTTP_CODE" in
+        409) echo "Tip: Some transactions may have already been imported. Check for duplicates in your ledger." ;;
+        422) echo "Tip: The parsed transactions could not be validated. Try re-uploading the original file." ;;
+    esac
     exit 1
 fi
 
@@ -186,3 +239,8 @@ echo "Imported $IMPORTED_COUNT transactions as drafts."
 echo ""
 echo "IMPORT COMPLETE: $IMPORTED_COUNT draft transactions from $ACCOUNT ($PERIOD)"
 echo "Review and post them from the Transactions page on the Dashboard."
+
+# Clean up uploaded statement file (data is now in LedgerForge)
+if [ -f "$FILE_PATH" ]; then
+    rm -f "$FILE_PATH"
+fi

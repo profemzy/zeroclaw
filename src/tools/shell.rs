@@ -8,7 +8,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 /// Maximum shell command execution time before kill.
-const SHELL_TIMEOUT_SECS: u64 = 60;
+/// Set to 300s to accommodate long-running PDF statement imports
+/// (LedgerForge async OCR jobs can take 2-4 minutes to complete).
+/// The gateway's own timeout budget (message_timeout_secs * min(iterations, 4))
+/// provides the overall safety net.
+const SHELL_TIMEOUT_SECS: u64 = 300;
 /// Maximum output size in bytes (1MB).
 const MAX_OUTPUT_BYTES: usize = 1_048_576;
 /// Environment variables safe to pass to shell commands.
@@ -396,7 +400,10 @@ mod tests {
 
     #[test]
     fn shell_timeout_constant_is_reasonable() {
-        assert_eq!(SHELL_TIMEOUT_SECS, 60, "shell timeout must be 60 seconds");
+        assert!(
+            SHELL_TIMEOUT_SECS >= 120 && SHELL_TIMEOUT_SECS <= 600,
+            "shell timeout must be 120-600s to accommodate PDF imports while staying within gateway budget"
+        );
     }
 
     #[test]

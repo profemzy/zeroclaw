@@ -620,7 +620,7 @@ Look for file extensions `.csv` or `.pdf` in the `[attached_file: ...]` marker, 
 
 ### Processing Flow
 
-1. Acknowledge: "I'll import your bank statement now." For PDFs add: "Processing your PDF — this may take a moment."
+1. Acknowledge: "I'll import your bank statement now." For PDFs add: "Processing your PDF — this may take a few minutes. I'll keep you updated on progress."
 2. Run a SINGLE script that parses AND imports in one shot:
 ```bash
 ~/workspace/skills/oluto/scripts/oluto-import-statement.sh FILE_PATH
@@ -629,9 +629,9 @@ Replace `FILE_PATH` with the path from `[attached_file: ...]`.
 
 The script handles everything automatically:
 - Uploads the file to the parse API
-- Polls for PDF results (handles async processing)
-- Confirms and imports the transactions into the ledger
-- Posts them as finalized entries
+- Polls for PDF results with progress updates (handles async processing, up to 4 minutes)
+- Confirms and imports the transactions into the ledger as drafts
+- Cleans up the local file after successful import
 
 The output includes a human-readable summary like:
 ```
@@ -639,19 +639,35 @@ Parsed: 15 transactions, 0 duplicates
 Account: BMO CashBack Business MasterCard
 Period: Nov. 29, 2025 - Dec. 28, 2025
 Imported 15 transactions as drafts.
-All 15 transactions posted successfully.
-IMPORT COMPLETE: 15 transactions from BMO CashBack Business MasterCard (Nov. 29, 2025 - Dec. 28, 2025)
+IMPORT COMPLETE: 15 draft transactions from BMO CashBack Business MasterCard (Nov. 29, 2025 - Dec. 28, 2025)
 ```
 
 3. Report the result to the user based on the script output. Do NOT fabricate or assume results — only report what the script actually outputs.
 
+### Error Handling
+- If the script outputs lines starting with "ERROR:", report the error to the user along with any "Tip:" lines that follow
+- If the script outputs "Warnings:", include them in your response
+- If 0 transactions are found, explain that the file was parsed but no new transactions were detected. Include any duplicate count or CSV header info from the output.
+
+### CSV Troubleshooting
+
+If the import script outputs a `CSV_HEADER:` line, the CSV format was not automatically recognized. Analyze the header columns and help the user:
+
+1. Look for date-like columns (e.g., "Transaction Date", "Date", "Posted Date")
+2. Look for amount columns (e.g., "Amount", "Debit", "Credit", "CAD$")
+3. Look for description columns (e.g., "Description", "Memo", "Details")
+4. Suggest: "Your CSV has columns: [list them]. The importer expects standard Canadian bank export format. Try re-downloading from your bank with a different export option."
+5. If the header looks like a credit card statement (e.g., has "Card Number", "Posted Amount"), note that and suggest the appropriate export.
+
+Do NOT attempt to manually reformat or re-upload the CSV — the parse endpoint handles all format detection.
+
 ### Rules
-- Only ONE tool call needed — the script does parse + import + post in a single run
+- Only ONE tool call needed — the script does parse + import in a single run
 - Do NOT ask for confirmation before importing — the user already chose to import by uploading the file
 - Do NOT show raw JSON — use the human-readable summary from the script
 - Do NOT fabricate results — if the script output says "ERROR", report the error. If it says "Imported 15", report 15.
 - Distinguish between receipts (single purchase image) and statements (CSV/PDF with multiple transactions)
-- For CSV files, results are immediate. For PDF files, processing may take 30-60 seconds (the script handles polling automatically)
+- For CSV files, results are immediate. For PDF files, processing may take 1-4 minutes (the script handles polling and progress updates automatically)
 
 ---
 
