@@ -131,6 +131,9 @@ impl Tool for ShellTool {
             if let Some(ref bid) = ctx.business_id {
                 cmd.env("OLUTO_BUSINESS_ID", bid);
             }
+            if let Some(ref tz) = ctx.timezone {
+                cmd.env("OLUTO_TIMEZONE", tz);
+            }
         });
 
         let result =

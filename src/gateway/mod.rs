@@ -44,6 +44,8 @@ pub struct RequestContext {
     pub jwt_token: Option<String>,
     /// The user's business UUID extracted from the webhook request body.
     pub business_id: Option<String>,
+    /// The business IANA timezone (e.g. "America/Toronto") from the webhook body.
+    pub timezone: Option<String>,
 }
 
 tokio::task_local! {
@@ -1107,7 +1109,7 @@ async fn parse_multipart_webhook(
     body: Bytes,
     boundary: &str,
     workspace_dir: &std::path::Path,
-) -> Result<(String, Option<String>, Vec<UploadedFile>), (StatusCode, Json<serde_json::Value>)> {
+) -> Result<(String, Option<String>, Option<String>, Vec<UploadedFile>), (StatusCode, Json<serde_json::Value>)> {
     let stream = futures_util::stream::once(async move {
         Ok::<Bytes, std::io::Error>(body)
     });
@@ -1115,6 +1117,7 @@ async fn parse_multipart_webhook(
 
     let mut message = String::new();
     let mut business_id: Option<String> = None;
+    let mut timezone: Option<String> = None;
     let mut uploaded_files = Vec::new();
     let mut file_count = 0usize;
 
@@ -1131,6 +1134,9 @@ async fn parse_multipart_webhook(
             }
             (Some("business_id"), _) => {
                 business_id = Some(field.text().await.unwrap_or_default());
+            }
+            (Some("timezone"), _) => {
+                timezone = Some(field.text().await.unwrap_or_default());
             }
             (_, Some(fname)) => {
                 file_count += 1;
@@ -1170,7 +1176,7 @@ async fn parse_multipart_webhook(
         message = "Process the attached receipt".to_string();
     }
 
-    Ok((message, business_id, uploaded_files))
+    Ok((message, business_id, timezone, uploaded_files))
 }
 
 /// Webhook request body
@@ -1180,6 +1186,9 @@ pub struct WebhookBody {
     /// Optional business context (injected as OLUTO_BUSINESS_ID for skill scripts)
     #[serde(default)]
     pub business_id: Option<String>,
+    /// Optional business timezone (injected as OLUTO_TIMEZONE for skill scripts)
+    #[serde(default)]
+    pub timezone: Option<String>,
 }
 
 /// POST /webhook — main webhook endpoint (accepts JSON or multipart/form-data)
@@ -1240,7 +1249,7 @@ async fn handle_webhook(
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
 
-    let (message, business_id, uploaded_files) = if content_type.starts_with("multipart/form-data") {
+    let (message, business_id, timezone, uploaded_files) = if content_type.starts_with("multipart/form-data") {
         let boundary = match multer::parse_boundary(content_type) {
             Ok(b) => b,
             Err(_) => {
@@ -1265,7 +1274,7 @@ async fn handle_webhook(
                 return (StatusCode::BAD_REQUEST, Json(err));
             }
         };
-        (webhook_body.message, webhook_body.business_id, Vec::new())
+        (webhook_body.message, webhook_body.business_id, webhook_body.timezone, Vec::new())
     };
 
     // ── Build final message with file annotations ──
@@ -1333,6 +1342,7 @@ async fn handle_webhook(
     let request_ctx = RequestContext {
         jwt_token: bearer_jwt,
         business_id: business_id.clone(),
+        timezone: timezone.clone(),
     };
 
     if state.auto_save {

@@ -24,7 +24,9 @@ fi
 
 BASE="/api/v1/businesses/$BID"
 
-# Calculate yesterday's date
+# Use business timezone for date computation (defaults to America/Toronto)
+TZ="${OLUTO_TIMEZONE:-America/Toronto}"
+export TZ
 YESTERDAY=$(date -d "yesterday" +%Y-%m-%d 2>/dev/null || date -v-1d +%Y-%m-%d 2>/dev/null)
 TODAY=$(date +%Y-%m-%d)
 
