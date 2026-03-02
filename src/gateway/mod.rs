@@ -1360,9 +1360,16 @@ async fn handle_webhook(
 
     // When OIDC is configured, validate the JWT and extract claims.
     // business_id from JWT claims takes precedence over request body (prevents spoofing).
-    let (validated_business_id, user_role) = if let (Some(ref oidc_svc), Some(ref token)) =
-        (&state.oidc_service, &bearer_jwt)
-    {
+    let (validated_business_id, user_role) = if let Some(ref oidc_svc) = &state.oidc_service {
+        // OIDC configured — JWT is REQUIRED
+        let token = match &bearer_jwt {
+            Some(t) => t,
+            None => {
+                tracing::warn!("OIDC enabled but no Bearer token provided");
+                let err = serde_json::json!({"error": "Authorization required"});
+                return (StatusCode::UNAUTHORIZED, Json(err));
+            }
+        };
         match oidc_svc.validate_token(token).await {
             Ok(claims) => {
                 let role = oidc::resolve_role(&claims);
@@ -1376,7 +1383,7 @@ async fn handle_webhook(
             }
         }
     } else {
-        // No OIDC service configured or no Bearer token — pass-through mode
+        // No OIDC configured — legacy pass-through (local dev only)
         (business_id.clone(), None)
     };
 
