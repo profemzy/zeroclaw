@@ -89,6 +89,9 @@ async-trait = "0.1"
 # HMAC-SHA256 (Zhipu/GLM JWT auth)
 ring = "0.17"
 
+# JWT validation (Keycloak OIDC RS256 tokens on /webhook)
+jsonwebtoken = { version = "10.0", default-features = false, features = ["use_pem", "aws_lc_rs"] }
+
 # Protobuf encode/decode (Lark WS frame codec, WhatsApp storage)
 prost = { version = "0.14", default-features = false, optional = true }
 

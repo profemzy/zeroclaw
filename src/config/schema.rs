@@ -696,6 +696,20 @@ pub struct GatewayConfig {
     /// Maximum distinct idempotency keys retained in memory.
     #[serde(default = "default_gateway_idempotency_max_keys")]
     pub idempotency_max_keys: usize,
+
+    /// Keycloak base URL for JWKS fetching (e.g. "https://auth.dev.oluto.app").
+    /// When set, JWT validation is enabled on /webhook.
+    #[serde(default)]
+    pub keycloak_url: Option<String>,
+
+    /// Keycloak realm name (default: "oluto").
+    #[serde(default = "default_keycloak_realm")]
+    pub keycloak_realm: String,
+
+    /// Optional separate issuer URL for token validation.
+    /// If not set, keycloak_url is used for both JWKS fetch and issuer check.
+    #[serde(default)]
+    pub keycloak_issuer_url: Option<String>,
 }
 
 fn default_gateway_port() -> u16 {
@@ -726,6 +740,10 @@ fn default_gateway_idempotency_max_keys() -> usize {
     10_000
 }
 
+fn default_keycloak_realm() -> String {
+    "oluto".into()
+}
+
 fn default_true() -> bool {
     true
 }
@@ -744,6 +762,9 @@ impl Default for GatewayConfig {
             rate_limit_max_keys: default_gateway_rate_limit_max_keys(),
             idempotency_ttl_secs: default_idempotency_ttl_secs(),
             idempotency_max_keys: default_gateway_idempotency_max_keys(),
+            keycloak_url: None,
+            keycloak_realm: default_keycloak_realm(),
+            keycloak_issuer_url: None,
         }
     }
 }
@@ -4810,6 +4831,9 @@ channel_id = "C123"
             rate_limit_max_keys: 2048,
             idempotency_ttl_secs: 600,
             idempotency_max_keys: 4096,
+            keycloak_url: None,
+            keycloak_realm: "oluto".into(),
+            keycloak_issuer_url: None,
         };
         let toml_str = toml::to_string(&g).unwrap();
         let parsed: GatewayConfig = toml::from_str(&toml_str).unwrap();

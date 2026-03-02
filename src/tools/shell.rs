@@ -134,6 +134,9 @@ impl Tool for ShellTool {
             if let Some(ref tz) = ctx.timezone {
                 cmd.env("OLUTO_TIMEZONE", tz);
             }
+            if let Some(ref role) = ctx.user_role {
+                cmd.env("OLUTO_USER_ROLE", role);
+            }
         });
 
         let result =

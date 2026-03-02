@@ -7,6 +7,8 @@
 //! - Request timeouts (30s) to prevent slow-loris attacks
 //! - Header sanitization (handled by axum/hyper)
 
+pub mod oidc;
+
 use crate::channels::{Channel, LinqChannel, NextcloudTalkChannel, SendMessage, WhatsAppChannel};
 use crate::config::Config;
 use crate::memory::{self, Memory, MemoryCategory};
@@ -42,10 +44,12 @@ use uuid::Uuid;
 pub struct RequestContext {
     /// The user's LedgerForge JWT extracted from the webhook Authorization header.
     pub jwt_token: Option<String>,
-    /// The user's business UUID extracted from the webhook request body.
+    /// The user's business UUID extracted from the webhook request body or JWT claims.
     pub business_id: Option<String>,
     /// The business IANA timezone (e.g. "America/Toronto") from the webhook body.
     pub timezone: Option<String>,
+    /// User role resolved from JWT `realm_access.roles` ("admin", "accountant", "viewer").
+    pub user_role: Option<String>,
 }
 
 tokio::task_local! {
@@ -329,6 +333,8 @@ pub struct AppState {
     pub multimodal: crate::config::MultimodalConfig,
     /// Base message timeout in seconds (scaled by tool iterations for budget)
     pub message_timeout_secs: u64,
+    /// OIDC service for JWT validation (None = pass-through mode)
+    pub oidc_service: Option<oidc::OidcService>,
 }
 
 /// Run the HTTP gateway using axum with proper HTTP/1.1 compliance.
@@ -724,6 +730,19 @@ pub async fn run_gateway(host: &str, port: u16, config: Config) -> Result<()> {
 
     crate::health::mark_component_ok("gateway");
 
+    // ── OIDC (Keycloak JWT validation) ─────────────────────────
+    let oidc_service = config.gateway.keycloak_url.as_ref().map(|url| {
+        oidc::OidcService::new(
+            url,
+            &config.gateway.keycloak_realm,
+            config.gateway.keycloak_issuer_url.as_deref(),
+            reqwest::Client::new(),
+        )
+    });
+    if oidc_service.is_some() {
+        println!("  \u{1f512} OIDC:     Keycloak JWT validation enabled");
+    }
+
     // Build shared state
     let observer: Arc<dyn crate::observability::Observer> =
         Arc::from(crate::observability::create_observer(&config.observability));
@@ -752,6 +771,7 @@ pub async fn run_gateway(host: &str, port: u16, config: Config) -> Result<()> {
         max_tool_iterations,
         multimodal,
         message_timeout_secs,
+        oidc_service,
     };
 
     // Build router with middleware
@@ -1328,21 +1348,43 @@ async fn handle_webhook(
         }
     }
 
-    // ── JWT passthrough for skill scripts ──
-    // WackOps/mobile sends the user's LedgerForge JWT in the Authorization header.
-    // Extract it and build a request-scoped context (via tokio::task_local) so
-    // ShellTool can inject OLUTO_JWT_TOKEN / OLUTO_BUSINESS_ID into child
-    // processes without process-global env var races.
+    // ── JWT extraction + OIDC validation ──
+    // Extract the Bearer token from the Authorization header, filtering out
+    // pairing tokens (those are ZeroClaw-issued, not Keycloak JWTs).
     let bearer_jwt = headers
         .get(header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
         .and_then(|auth| auth.strip_prefix("Bearer "))
         .filter(|t| !t.is_empty() && (!state.pairing.require_pairing() || !state.pairing.is_authenticated(t)))
         .map(String::from);
+
+    // When OIDC is configured, validate the JWT and extract claims.
+    // business_id from JWT claims takes precedence over request body (prevents spoofing).
+    let (validated_business_id, user_role) = if let (Some(ref oidc_svc), Some(ref token)) =
+        (&state.oidc_service, &bearer_jwt)
+    {
+        match oidc_svc.validate_token(token).await {
+            Ok(claims) => {
+                let role = oidc::resolve_role(&claims);
+                let bid = claims.business_id.or(business_id.clone());
+                (bid, Some(role))
+            }
+            Err(e) => {
+                tracing::warn!("JWT validation failed: {e:#}");
+                let err = serde_json::json!({"error": "Unauthorized \u{2014} invalid JWT token"});
+                return (StatusCode::UNAUTHORIZED, Json(err));
+            }
+        }
+    } else {
+        // No OIDC service configured or no Bearer token — pass-through mode
+        (business_id.clone(), None)
+    };
+
     let request_ctx = RequestContext {
         jwt_token: bearer_jwt,
-        business_id: business_id.clone(),
+        business_id: validated_business_id,
         timezone: timezone.clone(),
+        user_role,
     };
 
     if state.auto_save {
@@ -1922,6 +1964,7 @@ mod tests {
             max_tool_iterations: 10,
             multimodal: crate::config::MultimodalConfig::default(),
             message_timeout_secs: 300,
+            oidc_service: None,
         };
 
         let response = handle_metrics(State(state)).await.into_response();
@@ -1972,6 +2015,7 @@ mod tests {
             max_tool_iterations: 10,
             multimodal: crate::config::MultimodalConfig::default(),
             message_timeout_secs: 300,
+            oidc_service: None,
         };
 
         let response = handle_metrics(State(state)).await.into_response();
@@ -2339,6 +2383,7 @@ mod tests {
             max_tool_iterations: 10,
             multimodal: crate::config::MultimodalConfig::default(),
             message_timeout_secs: 300,
+            oidc_service: None,
         };
 
         let mut headers = HeaderMap::new();
@@ -2400,6 +2445,7 @@ mod tests {
             max_tool_iterations: 10,
             multimodal: crate::config::MultimodalConfig::default(),
             message_timeout_secs: 300,
+            oidc_service: None,
         };
 
         let headers = HeaderMap::new();
@@ -2473,6 +2519,7 @@ mod tests {
             max_tool_iterations: 10,
             multimodal: crate::config::MultimodalConfig::default(),
             message_timeout_secs: 300,
+            oidc_service: None,
         };
 
         let response = handle_webhook(
@@ -2520,6 +2567,7 @@ mod tests {
             max_tool_iterations: 10,
             multimodal: crate::config::MultimodalConfig::default(),
             message_timeout_secs: 300,
+            oidc_service: None,
         };
 
         let mut headers = HeaderMap::new();
@@ -2572,6 +2620,7 @@ mod tests {
             max_tool_iterations: 10,
             multimodal: crate::config::MultimodalConfig::default(),
             message_timeout_secs: 300,
+            oidc_service: None,
         };
 
         let mut headers = HeaderMap::new();
@@ -2629,6 +2678,7 @@ mod tests {
             max_tool_iterations: 10,
             multimodal: crate::config::MultimodalConfig::default(),
             message_timeout_secs: 300,
+            oidc_service: None,
         };
 
         let response = handle_nextcloud_talk_webhook(
@@ -2684,6 +2734,7 @@ mod tests {
             max_tool_iterations: 10,
             multimodal: crate::config::MultimodalConfig::default(),
             message_timeout_secs: 300,
+            oidc_service: None,
         };
 
         let mut headers = HeaderMap::new();
