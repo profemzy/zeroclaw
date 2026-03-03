@@ -23,6 +23,12 @@ METHOD="$1"
 PATH_ARG="$2"
 BODY="${3:-}"
 
+# ── RBAC enforcement: viewers cannot perform write operations ──
+if [ "${OLUTO_USER_ROLE:-}" = "viewer" ] && [ "$METHOD" != "GET" ]; then
+    echo "ERROR: Access denied — your role (viewer) cannot perform $METHOD operations. Contact your administrator to upgrade your role." >&2
+    exit 1
+fi
+
 BASE_URL=$(jq -r '.base_url' "$CONFIG_FILE")
 TOKEN=$("${SCRIPT_DIR}/oluto-auth.sh")
 

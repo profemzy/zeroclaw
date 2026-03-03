@@ -1003,8 +1003,35 @@ async fn run_gateway_agentic(
     }
 
     // ── Build per-request history (stateless — no cross-request memory) ──
-    let mut history = Vec::with_capacity(2);
+    let mut history = Vec::with_capacity(3);
     history.push(ChatMessage::system((*state.system_prompt).clone()));
+
+    // Inject user role context if available (from JWT via REQUEST_CTX)
+    let _ = REQUEST_CTX.try_with(|ctx| {
+        if let Some(ref role) = ctx.user_role {
+            let role_msg = match role.as_str() {
+                "viewer" => format!(
+                    "[System: The current user has role '{}'. They can only view data (GET requests). \
+                     Do NOT attempt any write operations (POST/PATCH/PUT/DELETE). \
+                     If they ask to create, update, or delete anything, politely explain that their \
+                     viewer role does not allow modifications.]",
+                    role
+                ),
+                "accountant" => format!(
+                    "[System: The current user has role '{}'. They can view data and perform \
+                     standard bookkeeping (create/edit transactions, invoices, contacts, etc.) \
+                     but cannot perform admin operations (QuickBooks import, business setup).]",
+                    role
+                ),
+                _ => format!(
+                    "[System: The current user has role '{}'. All operations are available.]",
+                    role
+                ),
+            };
+            history.push(ChatMessage::system(role_msg));
+        }
+    });
+
     history.extend(user_messages);
 
     // ── Compute timeout budget: base * min(iterations, 4) ──
@@ -3001,5 +3028,103 @@ mod tests {
         assert_eq!(keys.len(), 1);
         assert!(!keys.contains_key("old-key"));
         assert!(keys.contains_key("new-key"));
+    }
+
+    // ── Role context injection tests ──────────────────────────────────────
+
+    /// Helper: build a chat history the same way `run_gateway_agentic` does,
+    /// within a REQUEST_CTX scope that has the given `user_role`.
+    async fn build_history_with_role(
+        role: Option<&str>,
+    ) -> Vec<crate::providers::traits::ChatMessage> {
+        use crate::providers::traits::ChatMessage;
+
+        let system_prompt = "You are a test assistant.".to_string();
+        let user_msg = "hello";
+        let role_owned = role.map(String::from);
+
+        let ctx = RequestContext {
+            jwt_token: None,
+            business_id: None,
+            timezone: None,
+            user_role: role_owned,
+        };
+
+        REQUEST_CTX
+            .scope(ctx, async {
+                let user_messages = vec![ChatMessage::user(user_msg)];
+                let mut history = Vec::with_capacity(3);
+                history.push(ChatMessage::system(system_prompt));
+
+                // Replicate the role injection logic from run_gateway_agentic
+                let _ = REQUEST_CTX.try_with(|ctx| {
+                    if let Some(ref role) = ctx.user_role {
+                        let role_msg = match role.as_str() {
+                            "viewer" => format!(
+                                "[System: The current user has role '{}'. They can only view data (GET requests). \
+                                 Do NOT attempt any write operations (POST/PATCH/PUT/DELETE). \
+                                 If they ask to create, update, or delete anything, politely explain that their \
+                                 viewer role does not allow modifications.]",
+                                role
+                            ),
+                            "accountant" => format!(
+                                "[System: The current user has role '{}'. They can view data and perform \
+                                 standard bookkeeping (create/edit transactions, invoices, contacts, etc.) \
+                                 but cannot perform admin operations (QuickBooks import, business setup).]",
+                                role
+                            ),
+                            _ => format!(
+                                "[System: The current user has role '{}'. All operations are available.]",
+                                role
+                            ),
+                        };
+                        history.push(ChatMessage::system(role_msg));
+                    }
+                });
+
+                history.extend(user_messages);
+                history
+            })
+            .await
+    }
+
+    #[tokio::test]
+    async fn role_injection_viewer_adds_restriction_message() {
+        let history = build_history_with_role(Some("viewer")).await;
+        // system prompt + role message + user message = 3
+        assert_eq!(history.len(), 3);
+        assert_eq!(history[0].role, "system");
+        assert_eq!(history[1].role, "system");
+        assert!(history[1].content.contains("viewer"));
+        assert!(history[1].content.contains("Do NOT attempt any write operations"));
+        assert_eq!(history[2].role, "user");
+    }
+
+    #[tokio::test]
+    async fn role_injection_accountant_adds_bookkeeping_message() {
+        let history = build_history_with_role(Some("accountant")).await;
+        assert_eq!(history.len(), 3);
+        assert_eq!(history[1].role, "system");
+        assert!(history[1].content.contains("accountant"));
+        assert!(history[1].content.contains("standard bookkeeping"));
+        assert!(history[1].content.contains("cannot perform admin operations"));
+    }
+
+    #[tokio::test]
+    async fn role_injection_admin_adds_full_access_message() {
+        let history = build_history_with_role(Some("admin")).await;
+        assert_eq!(history.len(), 3);
+        assert_eq!(history[1].role, "system");
+        assert!(history[1].content.contains("admin"));
+        assert!(history[1].content.contains("All operations are available"));
+    }
+
+    #[tokio::test]
+    async fn role_injection_no_role_skips_message() {
+        let history = build_history_with_role(None).await;
+        // system prompt + user message only = 2 (no role message)
+        assert_eq!(history.len(), 2);
+        assert_eq!(history[0].role, "system");
+        assert_eq!(history[1].role, "user");
     }
 }

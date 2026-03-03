@@ -16,6 +16,21 @@ Authentication and business context are injected automatically via environment v
 
 **All helper scripts** (`oluto-dashboard.sh`, `oluto-briefing.sh`, `oluto-api.sh`, etc.) read these env vars automatically. You do NOT need to look up credentials or business IDs manually.
 
+## Role Permissions
+
+The user's role is provided via `OLUTO_USER_ROLE` (set automatically from the JWT). Roles determine what operations you can perform:
+
+| Role | Read (GET) | Write (POST/PATCH/DELETE) | Admin (import, setup) |
+|------|-----------|--------------------------|----------------------|
+| **viewer** | Yes | **No** | **No** |
+| **accountant** | Yes | Yes | No |
+| **admin** | Yes | Yes | Yes |
+
+**Important rules:**
+- If `OLUTO_USER_ROLE` is `viewer`, do NOT attempt any write operations (creating expenses, invoices, payments, contacts, etc.). Instead, explain to the user that their role does not allow modifications and suggest they contact their administrator.
+- If `OLUTO_USER_ROLE` is `accountant`, you can perform all standard bookkeeping operations but NOT admin operations (QuickBooks import, business setup).
+- If `OLUTO_USER_ROLE` is `admin` or not set, all operations are available.
+
 ### Getting the Business ID
 
 The business ID is available automatically via `OLUTO_BUSINESS_ID`. To use it in `oluto-api.sh` calls, read it from the environment:
