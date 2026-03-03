@@ -1,0 +1,128 @@
+# =============================================================================
+# Pipeline: cd-dev.yml (ZeroClaw-CD-DEV)
+# Purpose: Deploy ZeroClaw agent to DEV AKS cluster
+# Triggers: Successful ZeroClaw-CI builds or manual runs
+#
+# Uses multi-repo checkout to access K8s manifests from the oluto repo.
+# Applies agent-deployment.yaml with the CI-built image tag.
+# =============================================================================
+
+trigger: none
+
+resources:
+  pipelines:
+    - pipeline: agent-ci
+      source: "ZeroClaw-CI"
+      trigger:
+        enabled: true
+        branches:
+          include:
+            - master
+            - main
+  repositories:
+    - repository: oluto
+      type: github
+      name: profemzy/oluto
+      endpoint: infotitans-azure
+      ref: master
+
+variables:
+  acrLoginServer: "wackopscoachdevacr.azurecr.io"
+  azureServiceConnection: "terraformiacdevops1"
+  imageRepository: "oluto-agent"
+
+parameters:
+  - name: imageTag
+    displayName: "Agent Image Tag to Deploy"
+    type: string
+    default: "latest"
+
+stages:
+  - stage: Deploy_Agent_DEV
+    displayName: "Deploy Agent to DEV"
+    variables:
+      imageTag: ${{ coalesce(variables['resources.pipeline.agent-ci.runName'], parameters.imageTag) }}
+    jobs:
+      - deployment: Deploy_Agent_DEV_AKS
+        displayName: "Deploy Agent to DEV AKS"
+        pool:
+          vmImage: "ubuntu-24.04"
+        environment: "dev"
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+                - checkout: oluto
+
+                # Download build info from CI
+                - task: DownloadBuildArtifacts@1
+                  displayName: "Download Build Info"
+                  inputs:
+                    buildType: "specific"
+                    project: "$(System.TeamProject)"
+                    pipeline: "ZeroClaw-CI"
+                    buildVersionToDownload: "latestFromBranch"
+                    branchName: "$(Build.SourceBranch)"
+                    downloadType: "single"
+                    artifactName: "build-info"
+                    downloadPath: "$(System.ArtifactsDirectory)"
+                  continueOnError: true
+
+                # Resolve image tag from CI artifact or parameter
+                - task: Bash@3
+                  displayName: "Set Image Tag"
+                  inputs:
+                    targetType: "inline"
+                    script: |
+                      if [ -f "$(System.ArtifactsDirectory)/build-info/image-tag.txt" ]; then
+                        TAG=$(cat $(System.ArtifactsDirectory)/build-info/image-tag.txt)
+                        echo "Using tag from CI: $TAG"
+                        echo "##vso[task.setvariable variable=tag]$TAG"
+                      else
+                        echo "Using parameter tag: ${{ parameters.imageTag }}"
+                        echo "##vso[task.setvariable variable=tag]${{ parameters.imageTag }}"
+                      fi
+
+                # Sed the real tag into the manifest
+                - task: Bash@3
+                  displayName: "Update Agent Manifest"
+                  inputs:
+                    targetType: "inline"
+                    script: |
+                      echo "Deploying agent: $(acrLoginServer)/$(imageRepository):$(tag)"
+                      sed -i "s|image:.*oluto-agent:.*|image: $(acrLoginServer)/$(imageRepository):$(tag)|g" $(Build.SourcesDirectory)/oluto/k8s/dev/agent-deployment.yaml
+                      echo "--- Agent deployment image:"
+                      grep "image:" $(Build.SourcesDirectory)/oluto/k8s/dev/agent-deployment.yaml
+
+                - task: AzureCLI@2
+                  displayName: "Apply Agent Deployment (DEV)"
+                  inputs:
+                    azureSubscription: $(azureServiceConnection)
+                    scriptType: "bash"
+                    scriptLocation: "inlineScript"
+                    inlineScript: |
+                      az aks install-cli
+                      az aks get-credentials \
+                        --resource-group wackopscoach-dev-rg \
+                        --name wackopscoach-dev-aks \
+                        --overwrite-existing
+                      kubelogin convert-kubeconfig -l azurecli
+                      kubectl apply -f $(Build.SourcesDirectory)/oluto/k8s/dev/agent-deployment.yaml -n oluto
+                      kubectl rollout status deployment/oluto-agent -n oluto --timeout=300s
+
+                - task: AzureCLI@2
+                  displayName: "Verify DEV Health"
+                  inputs:
+                    azureSubscription: $(azureServiceConnection)
+                    scriptType: "bash"
+                    scriptLocation: "inlineScript"
+                    inlineScript: |
+                      sleep 10
+                      kubectl port-forward deployment/oluto-agent 18790:18790 -n oluto &
+                      PF_PID=$!
+                      sleep 5
+                      HEALTH=$(curl -sf http://localhost:18790/health || echo "FAILED")
+                      kill $PF_PID 2>/dev/null || true
+                      echo "DEV Health: $HEALTH"
+                      echo "$HEALTH" | grep -q '"status":"ok"' || exit 1

@@ -1,0 +1,99 @@
+# =============================================================================
+# Pipeline: cd-prod.yml (ZeroClaw-CD-PROD)
+# Purpose: Promote agent image to PROD ACR and deploy to PROD AKS
+# Triggers: Manual only — operator provides imageTag from a verified DEV build
+#
+# Uses az acr import to promote the DEV image to PROD ACR (same binary).
+# Uses multi-repo checkout to access K8s manifests from the oluto repo.
+# =============================================================================
+
+trigger: none
+pr: none
+
+resources:
+  repositories:
+    - repository: oluto
+      type: github
+      name: profemzy/oluto
+      endpoint: infotitans-azure
+      ref: master
+
+variables:
+  acrLoginServer: "wackopscoachdevacr.azurecr.io"
+  acrLoginServerProd: "wackopscoachprodacr.azurecr.io"
+  azureServiceConnection: "terraformiacdevops1"
+  imageRepository: "oluto-agent"
+
+parameters:
+  - name: imageTag
+    displayName: "Image Tag (Build ID from a verified DEV deployment)"
+    type: string
+
+stages:
+  - stage: Deploy_Agent_PROD
+    displayName: "Promote & Deploy Agent to PROD"
+    jobs:
+      - deployment: Deploy_Agent_PROD_AKS
+        displayName: "Promote & Deploy Agent to PROD AKS"
+        pool:
+          vmImage: "ubuntu-24.04"
+        environment: "prod"
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+                - checkout: oluto
+
+                # Promote image from DEV ACR to PROD ACR
+                - task: AzureCLI@2
+                  displayName: "Promote Image to PROD ACR"
+                  inputs:
+                    azureSubscription: $(azureServiceConnection)
+                    scriptType: "bash"
+                    scriptLocation: "inlineScript"
+                    inlineScript: |
+                      echo "Promoting agent image from $(acrLoginServer) to $(acrLoginServerProd)"
+                      echo "Tag: ${{ parameters.imageTag }}"
+                      az acr import \
+                        --name wackopscoachprodacr \
+                        --source $(acrLoginServer)/$(imageRepository):${{ parameters.imageTag }} \
+                        --image $(imageRepository):${{ parameters.imageTag }} \
+                        --force
+                      echo "Agent image promoted to PROD ACR"
+
+                # Sed the real tag into the manifest
+                - task: AzureCLI@2
+                  displayName: "Apply Agent Deployment (PROD)"
+                  inputs:
+                    azureSubscription: $(azureServiceConnection)
+                    scriptType: "bash"
+                    scriptLocation: "inlineScript"
+                    inlineScript: |
+                      az aks install-cli
+                      az aks get-credentials \
+                        --resource-group wackopscoach-prod-rg \
+                        --name wackopscoach-prod-aks \
+                        --overwrite-existing
+                      kubelogin convert-kubeconfig -l azurecli
+                      echo "Deploying agent: $(acrLoginServerProd)/$(imageRepository):${{ parameters.imageTag }}"
+                      sed -i "s|image:.*oluto-agent:.*|image: $(acrLoginServerProd)/$(imageRepository):${{ parameters.imageTag }}|g" $(Build.SourcesDirectory)/oluto/k8s/prod/agent-deployment.yaml
+                      grep "image:" $(Build.SourcesDirectory)/oluto/k8s/prod/agent-deployment.yaml
+                      kubectl apply -f $(Build.SourcesDirectory)/oluto/k8s/prod/agent-deployment.yaml -n oluto
+                      kubectl rollout status deployment/oluto-agent -n oluto --timeout=300s
+
+                - task: AzureCLI@2
+                  displayName: "Verify PROD Health"
+                  inputs:
+                    azureSubscription: $(azureServiceConnection)
+                    scriptType: "bash"
+                    scriptLocation: "inlineScript"
+                    inlineScript: |
+                      sleep 10
+                      kubectl port-forward deployment/oluto-agent 18790:18790 -n oluto &
+                      PF_PID=$!
+                      sleep 5
+                      HEALTH=$(curl -sf http://localhost:18790/health || echo "FAILED")
+                      kill $PF_PID 2>/dev/null || true
+                      echo "PROD Health: $HEALTH"
+                      echo "$HEALTH" | grep -q '"status":"ok"' || exit 1

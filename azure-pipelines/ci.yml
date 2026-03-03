@@ -1,0 +1,97 @@
+# =============================================================================
+# Pipeline: ci.yml (ZeroClaw-CI)
+# Purpose: Build and push ZeroClaw agent image to DEV ACR
+# Triggers: Changes to Rust source, skills, Cargo files, or Dockerfile
+#
+# Uses --target dev Docker stage to bake Oluto skills into the image.
+# =============================================================================
+
+trigger:
+  branches:
+    include:
+      - master
+      - main
+  paths:
+    include:
+      - src/**
+      - crates/**
+      - skills/**
+      - Cargo.toml
+      - Cargo.lock
+      - Dockerfile
+      - dev/**
+
+pr:
+  branches:
+    include:
+      - master
+      - main
+
+variables:
+  acrLoginServer: "wackopscoachdevacr.azurecr.io"
+  azureServiceConnection: "terraformiacdevops1"
+  imageRepository: "oluto-agent"
+  tag: "$(Build.BuildId)"
+
+stages:
+  - stage: Build
+    displayName: "Build & Push"
+    jobs:
+      - job: Build_Agent
+        displayName: "Build & Push Agent Image"
+        pool:
+          vmImage: "ubuntu-24.04"
+        steps:
+          - checkout: self
+            displayName: "Checkout Source Code"
+
+          - task: AzureCLI@2
+            displayName: "Login to DEV ACR"
+            inputs:
+              azureSubscription: $(azureServiceConnection)
+              scriptType: "bash"
+              scriptLocation: "inlineScript"
+              inlineScript: |
+                echo "Logging into ACR: $(acrLoginServer)"
+                az acr login --name $(acrLoginServer)
+
+          - task: Docker@2
+            displayName: "Build Agent Image (dev target)"
+            inputs:
+              command: "build"
+              repository: "$(acrLoginServer)/$(imageRepository)"
+              Dockerfile: "$(Build.SourcesDirectory)/Dockerfile"
+              buildContext: "$(Build.SourcesDirectory)"
+              arguments: "--target dev"
+              tags: |
+                $(tag)
+
+          - task: Docker@2
+            displayName: "Push Agent Image"
+            inputs:
+              command: "push"
+              repository: "$(acrLoginServer)/$(imageRepository)"
+              tags: |
+                $(tag)
+
+      - job: Publish_Build_Info
+        displayName: "Publish Build Info"
+        dependsOn: Build_Agent
+        pool:
+          vmImage: "ubuntu-24.04"
+        steps:
+          - task: Bash@3
+            displayName: "Export Build Info"
+            inputs:
+              targetType: "inline"
+              script: |
+                echo "Image Tag: $(tag)"
+                echo "Agent: $(acrLoginServer)/$(imageRepository):$(tag)"
+                echo "$(tag)" > $(Build.ArtifactStagingDirectory)/image-tag.txt
+
+          - task: PublishBuildArtifacts@1
+            displayName: "Publish Build Info"
+            inputs:
+              PathtoPublish: "$(Build.ArtifactStagingDirectory)"
+              ArtifactName: "build-info"
+              publishLocation: "Container"
