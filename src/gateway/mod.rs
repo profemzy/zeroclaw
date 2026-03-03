@@ -101,6 +101,22 @@ fn hash_webhook_secret(value: &str) -> String {
     hex::encode(digest)
 }
 
+/// Resolve `business_id` from JWT claims vs. request body under OIDC.
+///
+/// When OIDC is enabled, the JWT claim is authoritative. If the JWT lacks a
+/// `business_id` claim but the request body provides one, this returns `Err`
+/// to prevent cross-tenant spoofing. Without OIDC, body value is trusted.
+fn resolve_business_id(
+    jwt_bid: Option<String>,
+    body_bid: Option<String>,
+    oidc_enabled: bool,
+) -> Result<Option<String>, &'static str> {
+    if oidc_enabled && jwt_bid.is_none() && body_bid.is_some() {
+        return Err("JWT must contain business_id claim");
+    }
+    Ok(jwt_bid.or(body_bid))
+}
+
 /// How often the rate limiter sweeps stale IP entries from its map.
 const RATE_LIMITER_SWEEP_INTERVAL_SECS: u64 = 300; // 5 minutes
 
@@ -1400,8 +1416,19 @@ async fn handle_webhook(
         match oidc_svc.validate_token(token).await {
             Ok(claims) => {
                 let role = oidc::resolve_role(&claims);
-                let bid = claims.business_id.or(business_id.clone());
-                (bid, Some(role))
+                match resolve_business_id(claims.business_id, business_id.clone(), true) {
+                    Ok(bid) => (bid, Some(role)),
+                    Err(reason) => {
+                        tracing::warn!(
+                            "Tenant isolation: JWT missing business_id claim but request body \
+                             provided one — rejecting to prevent cross-tenant access"
+                        );
+                        let err = serde_json::json!({
+                            "error": format!("Unauthorized \u{2014} {reason}")
+                        });
+                        return (StatusCode::UNAUTHORIZED, Json(err));
+                    }
+                }
             }
             Err(e) => {
                 tracing::warn!("JWT validation failed: {e:#}");
@@ -1411,7 +1438,7 @@ async fn handle_webhook(
         }
     } else {
         // No OIDC configured — legacy pass-through (local dev only)
-        (business_id.clone(), None)
+        (resolve_business_id(None, business_id.clone(), false).unwrap_or(None), None)
     };
 
     let request_ctx = RequestContext {
@@ -3126,5 +3153,48 @@ mod tests {
         assert_eq!(history.len(), 2);
         assert_eq!(history[0].role, "system");
         assert_eq!(history[1].role, "user");
+    }
+
+    // ── resolve_business_id tests ──
+
+    #[test]
+    fn resolve_bid_oidc_jwt_has_bid_uses_jwt() {
+        let result = resolve_business_id(
+            Some("jwt-bid".into()),
+            Some("body-bid".into()),
+            true,
+        );
+        assert_eq!(result.unwrap().as_deref(), Some("jwt-bid"));
+    }
+
+    #[test]
+    fn resolve_bid_oidc_jwt_has_bid_body_none() {
+        let result = resolve_business_id(Some("jwt-bid".into()), None, true);
+        assert_eq!(result.unwrap().as_deref(), Some("jwt-bid"));
+    }
+
+    #[test]
+    fn resolve_bid_oidc_jwt_missing_bid_body_has_bid_rejects() {
+        let result = resolve_business_id(None, Some("body-bid".into()), true);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("business_id"));
+    }
+
+    #[test]
+    fn resolve_bid_oidc_both_none_allows_service_account() {
+        let result = resolve_business_id(None, None, true);
+        assert_eq!(result.unwrap(), None);
+    }
+
+    #[test]
+    fn resolve_bid_no_oidc_body_bid_passes_through() {
+        let result = resolve_business_id(None, Some("body-bid".into()), false);
+        assert_eq!(result.unwrap().as_deref(), Some("body-bid"));
+    }
+
+    #[test]
+    fn resolve_bid_no_oidc_both_none() {
+        let result = resolve_business_id(None, None, false);
+        assert_eq!(result.unwrap(), None);
     }
 }
