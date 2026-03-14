@@ -3456,6 +3456,26 @@ impl Config {
             self.gateway.allow_public_bind = val == "1" || val.eq_ignore_ascii_case("true");
         }
 
+        // Gateway OIDC settings
+        if let Ok(url) = std::env::var("ZEROCLAW_GATEWAY_KEYCLOAK_URL") {
+            let url = url.trim();
+            if !url.is_empty() {
+                self.gateway.keycloak_url = Some(url.to_string());
+            }
+        }
+        if let Ok(realm) = std::env::var("ZEROCLAW_GATEWAY_KEYCLOAK_REALM") {
+            let realm = realm.trim();
+            if !realm.is_empty() {
+                self.gateway.keycloak_realm = realm.to_string();
+            }
+        }
+        if let Ok(issuer) = std::env::var("ZEROCLAW_GATEWAY_KEYCLOAK_ISSUER_URL") {
+            let issuer = issuer.trim();
+            if !issuer.is_empty() {
+                self.gateway.keycloak_issuer_url = Some(issuer.to_string());
+            }
+        }
+
         // Temperature: ZEROCLAW_TEMPERATURE
         if let Ok(temp_str) = std::env::var("ZEROCLAW_TEMPERATURE") {
             if let Ok(temp) = temp_str.parse::<f64>() {
